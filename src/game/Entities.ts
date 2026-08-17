@@ -38,6 +38,8 @@ export class Player {
   charging = false;
 
   meleeCooldown = 0;
+  /** Counts down after a swing so the arc can be drawn. */
+  meleeSwingTimer = 0;
   abilityCooldown = 0;
 
   ultimateUnlocked = false;
@@ -176,6 +178,8 @@ export class Enemy {
   bossTimer = 1.5;
   lungeDirX = 0;
   lungeDirY = 0;
+  /** Distance left in the current charge, so it stops on the target. */
+  lungeRemaining = 0;
 
   constructor(x: number, y: number, kind: EnemyKind, hp: number, speed: number, damage: number, radiusMult = 1) {
     this.x = x;

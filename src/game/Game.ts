@@ -2,7 +2,7 @@ import { Input } from './Input';
 import { Camera } from './Camera';
 import { Particles, PointFlyers } from './Particles';
 import { Sfx } from './Audio';
-import { Level, resolveWallCollisions, circleRectCollide, type Station, type RoomInfo, type DoorInfo } from './Level';
+import { Level, resolveWallCollisions, circleRectCollide, sweepTo, type Station, type RoomInfo, type DoorInfo } from './Level';
 import { Player, Enemy, enemyColor, PLAYER_RADIUS, type EnemyProjectile, type Turret } from './Entities';
 import {
   Companion,
@@ -50,7 +50,7 @@ import { SKILL_NODES, BRANCH_COLOR, BRANCH_LABEL, computeEffects, isUnlockable, 
 import { DEFAULT_BINDINGS, ACTION_ORDER, ACTION_LABELS, loadBindings, saveBindings, formatKeyCode, type ActionId } from './Keybinds';
 import { NetLink } from './Net';
 import { CoopUI } from './CoopUI';
-import { RARITY_ORDER, type EnemyKind, type CharacterId, type Rarity } from './types';
+import { RARITY_ORDER, type EnemyKind, type CharacterId, type Rarity, type FieldUpgrade } from './types';
 import {
   WORLD_H,
   VIEW_W,
@@ -66,6 +66,12 @@ import {
   WORKBENCH_BASE_COST,
   WORKBENCH_COST_STEP,
   TREASURE_BASE_BONUS,
+  UPGRADE_BASE_COST,
+  UPGRADE_COST_STEP,
+  BOSS_LUNGE_SPEED,
+  BOSS_LUNGE_MAX,
+  BOSS_MIN_APPROACH,
+  MELEE_COOLDOWN,
   BASE_VISION_RADIUS,
   AMBIENT_LIGHT,
   DOWN_BLEEDOUT,
@@ -113,6 +119,13 @@ interface PlayerInput {
  *  when several input packets land between two host ticks. */
 const EDGE_KEYS = ['fire', 'dash', 'ability', 'ultimate', 'interact', 'melee', 'reload', 'swap', 'w1', 'w2'] as const;
 type EdgeKey = (typeof EDGE_KEYS)[number];
+
+const UPGRADE_LABELS: Record<FieldUpgrade, string> = {
+  vitality: 'VITALITY',
+  power: 'POWER',
+  haste: 'HASTE',
+  reload: 'RAPID RELOAD',
+};
 
 function zeroEdges(): Record<EdgeKey, number> {
   return { fire: 0, dash: 0, ability: 0, ultimate: 0, interact: 0, melee: 0, reload: 0, swap: 0, w1: 0, w2: 0 };
@@ -173,6 +186,7 @@ export class Game {
   private hitStopTimer = 0;
   private flickerPhase = 0;
   private runBonusEssence = 0;
+  private upgradesBought = 0;
   private lastEssenceEarned = 0;
   private lastTokensEarned = 0;
   private stats: RunStats = { kills: 0, roundsSurvived: 0, points: 0 };
@@ -692,7 +706,7 @@ export class Game {
   private spawnRemotePlayer() {
     if (!this.guestCharId) return;
     const def = CHARACTER_DEFS[this.guestCharId];
-    const fx = this.guestEffects ?? computeEffects([]);
+    const fx = { ...computeEffects([]), ...(this.guestEffects ?? {}) };
     const p = new Player(1, 160, WORLD_H / 2 + 60, def, fx);
     p.ultimateUnlocked = true;
     p.points = this.players[0]?.points ?? 0;
@@ -703,7 +717,8 @@ export class Game {
     this.effects = computeEffects(this.meta.skills);
     this.level = new Level();
     this.mysteryBox = new MysteryBox();
-    const p0 = new Player(0, 120, WORLD_H / 2, def, this.effects);
+    // a per-run copy so in-run field upgrades never write back into meta progression
+    const p0 = new Player(0, 120, WORLD_H / 2, def, { ...this.effects });
     p0.ultimateUnlocked = this.meta.ultimatesUnlocked[def.id];
     this.players = [p0];
     this.localIndex = 0;
@@ -725,6 +740,7 @@ export class Game {
     this.hitStopTimer = 0;
     this.paused = false;
     this.runBonusEssence = 0;
+    this.upgradesBought = 0;
     // start each run from a clean input-edge baseline on both ends of the link
     this.localEdges = zeroEdges();
     this.remoteEdgePending = zeroEdges();
@@ -1273,6 +1289,7 @@ export class Game {
     if (p.abilityCooldown > 0) p.abilityCooldown -= dt;
     if (p.ultimateCooldown > 0) p.ultimateCooldown -= dt;
     if (p.meleeCooldown > 0) p.meleeCooldown -= dt;
+    if (p.meleeSwingTimer > 0) p.meleeSwingTimer -= dt;
 
     if (p.downed) {
       // downed players crawl slowly and can do nothing else
@@ -1417,7 +1434,7 @@ export class Game {
     const def = WEAPON_DEFS[weapon.roll.weaponId];
     if (weapon.ammoInMag >= def.magSize || weapon.ammoReserve <= 0) return;
     p.reloading = true;
-    p.reloadTimer = def.reloadTime;
+    p.reloadTimer = def.reloadTime * p.effects.reloadMult;
     this.sfx.reload();
   }
 
@@ -1448,7 +1465,8 @@ export class Game {
 
   private handleMelee(p: Player, inp: PlayerInput) {
     if (!inp.melee || p.meleeCooldown > 0) return;
-    p.meleeCooldown = 0.5;
+    p.meleeCooldown = MELEE_COOLDOWN;
+    p.meleeSwingTimer = 0.18;
     this.sfx.melee();
     this.particles.burst(p.x + Math.cos(p.aimAngle) * 30, p.y + Math.sin(p.aimAngle) * 30, '#e8e8ea', 6, 140);
 
@@ -1522,12 +1540,14 @@ export class Game {
         break;
       }
       case 'phantom': {
-        // blink toward the cursor, stopping short of geometry
+        // Blink sweeps along the path instead of resolving only at the
+        // destination, which previously let it land on the far side of a wall
+        // and skip paid doors entirely.
         const dist = 240;
         const tx = p.x + Math.cos(p.aimAngle) * dist;
         const ty = p.y + Math.sin(p.aimAngle) * dist;
         this.particles.burst(p.x, p.y, '#b06bff', 18, 200);
-        const res = resolveWallCollisions(tx, ty, PLAYER_RADIUS, this.level.allWalls());
+        const res = sweepTo(p.x, p.y, tx, ty, PLAYER_RADIUS, this.level.allWalls());
         p.x = res.x;
         p.y = res.y;
         p.iframeTimer = Math.max(p.iframeTimer, 0.25);
@@ -1700,6 +1720,18 @@ export class Game {
       this.particles.floatText(station.x, station.y - 40, `${WEAPON_DEFS[roll.weaponId].name.toUpperCase()} (${roll.rarity.toUpperCase()})`, color);
       this.camera.shake(5, 0.25);
       this.sfx.rarityFanfare(roll.rarity);
+    } else if (station.kind === 'upgrade') {
+      const cost = UPGRADE_BASE_COST + this.upgradesBought * UPGRADE_COST_STEP;
+      if (p.points < cost) return;
+      this.spendPoints(cost);
+      this.upgradesBought++;
+      station.collected = true;
+      const label = this.applyFieldUpgrade(p, station.perk ?? 'power');
+      this.particles.burst(station.x, station.y, '#6ee7d5', 30, 240);
+      this.pushEvent(station.x, station.y, '#6ee7d5', 30);
+      this.particles.floatText(station.x, station.y - 40, label, '#6ee7d5');
+      this.camera.shake(4, 0.2);
+      this.sfx.rarityFanfare('epic');
     } else if (station.kind === 'workbench') {
       const roll = p.currentWeapon.roll;
       const cost = WORKBENCH_BASE_COST + RARITY_ORDER.indexOf(roll.rarity) * WORKBENCH_COST_STEP;
@@ -1712,6 +1744,25 @@ export class Game {
       this.particles.floatText(station.x, station.y - 40, 'UPGRADED!', color);
       this.camera.shake(4, 0.2);
       this.sfx.rarityFanfare(p.currentWeapon.roll.rarity);
+    }
+  }
+
+  /** Run-only buff from a field upgrade station. Returns a label for the popup. */
+  private applyFieldUpgrade(p: Player, perk: FieldUpgrade): string {
+    switch (perk) {
+      case 'vitality':
+        p.maxHp += 25;
+        p.hp = Math.min(p.maxHp, p.hp + 25);
+        return '+25 MAX HEALTH';
+      case 'power':
+        p.effects.damageMult += 0.12;
+        return '+12% DAMAGE';
+      case 'haste':
+        p.effects.moveSpeedMult += 0.08;
+        return '+8% MOVE SPEED';
+      case 'reload':
+        p.effects.reloadMult = Math.max(0.4, p.effects.reloadMult - 0.15);
+        return '-15% RELOAD TIME';
     }
   }
 
@@ -1874,7 +1925,9 @@ export class Game {
       case 'approach': {
         this.seekTarget(e, target, dt);
         e.bossTimer -= dt;
-        if (Math.hypot(target.x - e.x, target.y - e.y) < 260 || e.bossTimer <= 0) {
+        // A minimum approach window stops it re-winding the instant it lands,
+        // which previously made it ping-pong over the player's head forever.
+        if (e.bossTimer <= 0 && Math.hypot(target.x - e.x, target.y - e.y) < 320) {
           e.bossState = 'windup';
           e.bossTimer = 0.8;
           this.sfx.bossRoar();
@@ -1889,16 +1942,24 @@ export class Game {
           const d = Math.hypot(dx, dy) || 1;
           e.lungeDirX = dx / d;
           e.lungeDirY = dy / d;
+          // Travel only as far as the target actually is (plus a little), so
+          // the charge connects instead of sailing past.
+          e.lungeRemaining = Math.min(BOSS_LUNGE_MAX, d + e.radius);
           e.bossState = 'lunge';
-          e.bossTimer = 0.4;
+          e.bossTimer = 0.6;
         }
         break;
       }
       case 'lunge': {
         e.bossTimer -= dt;
-        const res = resolveWallCollisions(e.x + e.lungeDirX * 780 * dt, e.y + e.lungeDirY * 780 * dt, e.radius, this.level.allWalls());
+        const step = Math.min(BOSS_LUNGE_SPEED * dt, e.lungeRemaining);
+        e.lungeRemaining -= step;
+        const res = sweepTo(e.x, e.y, e.x + e.lungeDirX * step, e.y + e.lungeDirY * step, e.radius, this.level.allWalls());
+        const blocked = Math.hypot(res.x - e.x, res.y - e.y) < step - 0.5;
         e.x = res.x;
         e.y = res.y;
+
+        let connected = false;
         for (const p of this.players) {
           if (!p.active) continue;
           if (Math.hypot(p.x - e.x, p.y - e.y) < e.radius + PLAYER_RADIUS + 6 && e.attackCooldown <= 0) {
@@ -1908,11 +1969,14 @@ export class Game {
               this.camera.shake(8, 0.2);
               this.sfx.damageTaken();
               this.killStreak = 0;
+              connected = true;
               if (result === 'downed') this.onPlayerDowned(p);
             }
           }
         }
-        if (e.bossTimer <= 0) {
+
+        if (connected || blocked || e.lungeRemaining <= 0 || e.bossTimer <= 0) {
+          this.bossSlam(e);
           e.bossState = 'cooldown';
           e.bossTimer = 1.3;
         }
@@ -1922,9 +1986,27 @@ export class Game {
         e.bossTimer -= dt;
         if (e.bossTimer <= 0) {
           e.bossState = 'approach';
-          e.bossTimer = 2;
+          e.bossTimer = BOSS_MIN_APPROACH;
         }
         break;
+      }
+    }
+  }
+
+  /** Short-range shockwave where a charge ends, so the attack reads even on a miss. */
+  private bossSlam(e: Enemy) {
+    this.particles.burst(e.x, e.y, '#ff8a7a', 20, 240);
+    this.pushEvent(e.x, e.y, '#ff8a7a', 20);
+    this.camera.shake(5, 0.2);
+    for (const p of this.players) {
+      if (!p.active) continue;
+      if (Math.hypot(p.x - e.x, p.y - e.y) < e.radius + 46 && e.attackCooldown <= 0) {
+        const result = p.takeDamage(e.damage * 0.6);
+        if (result !== 'none') {
+          e.attackCooldown = 0.8;
+          this.sfx.damageTaken();
+          if (result === 'downed') this.onPlayerDowned(p);
+        }
       }
     }
   }
@@ -2265,6 +2347,37 @@ export class Game {
         ctx.font = 'bold 12px monospace';
         ctx.textAlign = 'center';
         ctx.fillText(label, s.x, s.y - 26);
+      } else if (s.kind === 'upgrade') {
+        const pulse = (Math.sin(this.flickerPhase * 4) + 1) / 2;
+        ctx.save();
+        ctx.shadowColor = '#6ee7d5';
+        ctx.shadowBlur = 16 + pulse * 12;
+        ctx.fillStyle = '#123a38';
+        ctx.beginPath();
+        ctx.moveTo(s.x, s.y - 26);
+        ctx.lineTo(s.x + 24, s.y);
+        ctx.lineTo(s.x, s.y + 22);
+        ctx.lineTo(s.x - 24, s.y);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = '#6ee7d5';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        // upward chevrons read as "upgrade"
+        ctx.beginPath();
+        ctx.moveTo(s.x - 8, s.y + 4);
+        ctx.lineTo(s.x, s.y - 6);
+        ctx.lineTo(s.x + 8, s.y + 4);
+        ctx.moveTo(s.x - 8, s.y + 12);
+        ctx.lineTo(s.x, s.y + 2);
+        ctx.lineTo(s.x + 8, s.y + 12);
+        ctx.stroke();
+        ctx.restore();
+        const cost = UPGRADE_BASE_COST + this.upgradesBought * UPGRADE_COST_STEP;
+        ctx.fillStyle = '#a8f0e6';
+        ctx.font = 'bold 12px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(`[F] ${UPGRADE_LABELS[s.perk ?? 'power']} — ${cost}`, s.x, s.y - 36);
       } else if (s.kind === 'treasure') {
         const pulse = (Math.sin(this.flickerPhase * 6) + 1) / 2;
         ctx.save();
@@ -2454,6 +2567,27 @@ export class Game {
     ctx.beginPath();
     ctx.arc(p.x, p.y, PLAYER_RADIUS, 0, Math.PI * 2);
     ctx.stroke();
+
+    // melee swing arc - shows exactly what the swing covers
+    if (p.meleeSwingTimer > 0) {
+      const t = p.meleeSwingTimer / 0.18;
+      const reach = MELEE_RANGE * (1.15 - t * 0.15);
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, t) * 0.75;
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 5;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, reach, p.aimAngle - MELEE_ARC / 2, p.aimAngle + MELEE_ARC / 2);
+      ctx.stroke();
+      ctx.globalAlpha = Math.min(1, t) * 0.22;
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y);
+      ctx.arc(p.x, p.y, reach, p.aimAngle - MELEE_ARC / 2, p.aimAngle + MELEE_ARC / 2);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
 
     // little visor so the character has a facing read
     ctx.save();

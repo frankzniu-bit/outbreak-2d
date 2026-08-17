@@ -46,6 +46,8 @@ export type EnemyKind = 'runner' | 'fast' | 'tank' | 'spitter' | 'vampire' | 'ex
 
 export type CompanionSpecies = 'drone' | 'walker' | 'swarm' | 'wraith';
 
-export type RoomContent = 'start' | 'mysterybox' | 'workbench' | 'treasure' | 'empty';
+export type RoomContent = 'start' | 'mysterybox' | 'workbench' | 'treasure' | 'upgrade' | 'empty';
 
-export type StationKind = 'mysterybox' | 'workbench' | 'treasure';
+export type StationKind = 'mysterybox' | 'workbench' | 'treasure' | 'upgrade';
+
+export type FieldUpgrade = 'vitality' | 'power' | 'haste' | 'reload';

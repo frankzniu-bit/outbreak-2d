@@ -1,4 +1,4 @@
-import type { RoomContent, StationKind } from './types';
+import type { RoomContent, StationKind, FieldUpgrade } from './types';
 import { WORLD_H, ROOM_W, DOOR_BASE_COST, DOOR_COST_STEP } from './constants';
 
 export interface Wall {
@@ -13,6 +13,8 @@ export interface RoomInfo {
   xStart: number;
   xEnd: number;
   content: RoomContent;
+  /** Interior cover, in world coordinates, so rooms aren't bare boxes. */
+  obstacles: Wall[];
 }
 
 export interface DoorInfo {
@@ -29,10 +31,61 @@ export interface Station {
   y: number;
   roomIndex: number;
   collected: boolean;
+  /** Only set for 'upgrade' stations. */
+  perk?: FieldUpgrade;
 }
 
 const WALL_THICK = 24;
 const DOOR_GAP = 150;
+
+const FIELD_UPGRADES: FieldUpgrade[] = ['vitality', 'power', 'haste', 'reload'];
+
+/**
+ * Interior cover layouts, in room-local coordinates. Every layout keeps the
+ * central 350..550 x 380..620 box clear (that's where a station sits) and stays
+ * 140px clear of the room's side walls so the door corridors are never blocked.
+ */
+const ROOM_LAYOUTS: Wall[][] = [
+  // corner pillars
+  [
+    { x: 200, y: 210, w: 62, h: 62 },
+    { x: 638, y: 210, w: 62, h: 62 },
+    { x: 200, y: 728, w: 62, h: 62 },
+    { x: 638, y: 728, w: 62, h: 62 },
+  ],
+  // horizontal barricades top and bottom
+  [
+    { x: 180, y: 170, w: 250, h: 26 },
+    { x: 470, y: 170, w: 250, h: 26 },
+    { x: 180, y: 804, w: 250, h: 26 },
+    { x: 470, y: 804, w: 250, h: 26 },
+  ],
+  // vertical columns flanking the middle
+  [
+    { x: 232, y: 130, w: 26, h: 230 },
+    { x: 642, y: 130, w: 26, h: 230 },
+    { x: 232, y: 640, w: 26, h: 230 },
+    { x: 642, y: 640, w: 26, h: 230 },
+  ],
+  // scattered crates
+  [
+    { x: 190, y: 300, w: 52, h: 52 },
+    { x: 300, y: 160, w: 52, h: 52 },
+    { x: 610, y: 640, w: 52, h: 52 },
+    { x: 700, y: 330, w: 52, h: 52 },
+    { x: 250, y: 690, w: 52, h: 52 },
+    { x: 560, y: 820, w: 52, h: 52 },
+  ],
+  // opposing L-shaped bunkers
+  [
+    { x: 210, y: 250, w: 180, h: 26 },
+    { x: 210, y: 250, w: 26, h: 150 },
+    { x: 510, y: 724, w: 180, h: 26 },
+    { x: 664, y: 600, w: 26, h: 150 },
+  ],
+  // sparse - occasional breather room
+  [{ x: 420, y: 150, w: 60, h: 60 }, { x: 420, y: 790, w: 60, h: 60 }],
+];
 
 /**
  * An endless, procedurally-extending facility: rooms are generated on demand as the
@@ -46,8 +99,19 @@ export class Level {
   walls: Wall[] = [];
 
   constructor() {
-    this.rooms.push({ index: 0, xStart: 0, xEnd: ROOM_W, content: 'start' });
+    this.rooms.push({ index: 0, xStart: 0, xEnd: ROOM_W, content: 'start', obstacles: [] });
     this.generateNextRoom();
+  }
+
+  private rollObstacles(xStart: number): Wall[] {
+    const layout = ROOM_LAYOUTS[Math.floor(Math.random() * ROOM_LAYOUTS.length)];
+    const mirrored = Math.random() < 0.5;
+    return layout.map((w) => ({
+      x: xStart + (mirrored ? ROOM_W - w.x - w.w : w.x),
+      y: w.y,
+      w: w.w,
+      h: w.h,
+    }));
   }
 
   totalWidth(): number {
@@ -65,19 +129,21 @@ export class Level {
       content = 'mysterybox';
     } else {
       const roll = Math.random();
-      content = roll < 0.3 ? 'workbench' : roll < 0.55 ? 'treasure' : 'empty';
+      content = roll < 0.24 ? 'workbench' : roll < 0.44 ? 'upgrade' : roll < 0.64 ? 'treasure' : 'empty';
     }
 
-    const room: RoomInfo = { index, xStart: index * ROOM_W, xEnd: (index + 1) * ROOM_W, content };
+    const xStart = index * ROOM_W;
+    const room: RoomInfo = { index, xStart, xEnd: xStart + ROOM_W, content, obstacles: this.rollObstacles(xStart) };
     this.rooms.push(room);
 
-    if (content === 'mysterybox' || content === 'workbench' || content === 'treasure') {
+    if (content !== 'empty') {
       this.stations.push({
         kind: content,
         x: room.xStart + ROOM_W / 2,
         y: WORLD_H / 2,
         roomIndex: index,
         collected: false,
+        perk: content === 'upgrade' ? FIELD_UPGRADES[Math.floor(Math.random() * FIELD_UPGRADES.length)] : undefined,
       });
     }
 
@@ -105,6 +171,9 @@ export class Level {
     for (const door of this.doors) {
       this.walls.push({ x: door.x, y: 0, w: WALL_THICK, h: door.gapTop });
       this.walls.push({ x: door.x, y: door.gapBottom, w: WALL_THICK, h: WORLD_H - door.gapBottom });
+    }
+    for (const room of this.rooms) {
+      for (const o of room.obstacles) this.walls.push(o);
     }
   }
 
@@ -222,6 +291,45 @@ export function circleRectCollide(cx: number, cy: number, r: number, rect: Wall)
     return { x: (dx / dist) * overlap, y: (dy / dist) * overlap };
   }
   return null;
+}
+
+function overlapsAny(x: number, y: number, r: number, walls: Wall[]): boolean {
+  for (const w of walls) {
+    if (circleRectCollide(x, y, r, w)) return true;
+  }
+  return false;
+}
+
+/**
+ * Moves from a point toward a target in small steps, stopping at the last
+ * position that isn't inside geometry. Teleports and very fast dashes must use
+ * this - resolving collisions only at the destination lets you land cleanly on
+ * the far side of a wall.
+ */
+export function sweepTo(
+  fromX: number,
+  fromY: number,
+  toX: number,
+  toY: number,
+  r: number,
+  walls: Wall[],
+): { x: number; y: number } {
+  const dx = toX - fromX;
+  const dy = toY - fromY;
+  const dist = Math.hypot(dx, dy);
+  if (dist < 0.001) return { x: fromX, y: fromY };
+  const steps = Math.max(1, Math.ceil(dist / (r * 0.5)));
+  let lastX = fromX;
+  let lastY = fromY;
+  for (let i = 1; i <= steps; i++) {
+    const t = i / steps;
+    const nx = fromX + dx * t;
+    const ny = fromY + dy * t;
+    if (overlapsAny(nx, ny, r, walls)) break;
+    lastX = nx;
+    lastY = ny;
+  }
+  return { x: lastX, y: lastY };
 }
 
 export function resolveWallCollisions(x: number, y: number, r: number, walls: Wall[]): { x: number; y: number } {

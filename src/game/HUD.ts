@@ -380,7 +380,7 @@ export function drawHud(ctx: CanvasRenderingContext2D, player: Player, level: Le
   let ringFrac = 1;
   let ringColor = wcColor;
   if (player.reloading) {
-    ringFrac = 1 - player.reloadTimer / def.reloadTime;
+    ringFrac = 1 - player.reloadTimer / (def.reloadTime * player.effects.reloadMult);
     ringColor = '#ff9d2e';
   } else if (player.charging && def.chargeTime) {
     ringFrac = Math.min(1, player.chargeTime / def.chargeTime);

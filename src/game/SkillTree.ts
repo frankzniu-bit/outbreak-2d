@@ -60,6 +60,8 @@ export interface SkillEffects {
   executionerBonus: number;
   dashCdMult: number;
   moveSpeedMult: number;
+  /** Multiplier on reload duration - lowered by in-run field upgrades. */
+  reloadMult: number;
   iframeMult: number;
   startPoints: number;
   pointGainMult: number;
@@ -78,6 +80,7 @@ export function computeEffects(owned: string[]): SkillEffects {
     executionerBonus: has('execute') ? 0.4 : 0,
     dashCdMult: Math.max(0.4, 1 - (has('dash1') ? 0.1 : 0) - (has('phase') ? 0.15 : 0)),
     moveSpeedMult: 1 + (has('spd1') ? 0.06 : 0),
+    reloadMult: 1,
     iframeMult: 1 + (has('iframe') ? 0.6 : 0),
     startPoints: has('pts1') ? 150 : 0,
     pointGainMult: 1 + (has('gain1') ? 0.15 : 0),
