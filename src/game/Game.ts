@@ -222,6 +222,8 @@ export class Game {
   private selectedCharacterIndex = 0;
   private listeningForAction: ActionId | null = null;
   private paused = false;
+  /** True while the volume bar is being dragged rather than clicked once. */
+  private draggingVolume = false;
   /** Where the controls screen returns to - the menu, or a paused run. */
   private controlsReturn: Scene = 'select';
   /** The crate currently being whacked open on the companions screen. */
@@ -717,7 +719,7 @@ export class Game {
         t: 'in', mx: +inp.mx.toFixed(2), my: +inp.my.toFixed(2), aim: +inp.aim.toFixed(2),
         fh: inp.fireHeld, ih: inp.interactHeld, c: this.localEdges,
       });
-      this.camera.follow(p.x, p.y, VIEW_W, VIEW_H, this.level.bounds());
+      this.camera.follow(p.x, p.y, VIEW_W, VIEW_H);
     }
     this.particles.update(dt);
     this.camera.update(dt);
@@ -1387,28 +1389,177 @@ export class Game {
     this.scene = 'controls';
   }
 
+  // ---------------- shared audio + keybind widgets ----------------
+
+  /** Geometry of the mute button and volume bar, so both menus lay out alike. */
+  private audioStrip(x: number, y: number, barW = 300) {
+    return { muteX: x, muteY: y, muteW: 90, muteH: 28, barX: x + 110, barY: y + 8, barW, barH: 12 };
+  }
+
+  private drawAudioStrip(strip: ReturnType<typeof Game.prototype.audioStrip>) {
+    const ctx = this.ctx;
+    const mx = this.input.mouseX;
+    const my = this.input.mouseY;
+    const muteHover = mx >= strip.muteX && mx <= strip.muteX + strip.muteW && my >= strip.muteY && my <= strip.muteY + strip.muteH;
+    drawButton(ctx, strip.muteX, strip.muteY, strip.muteW, strip.muteH,
+      this.settings.muted ? 'UNMUTE' : 'MUTE', this.settings.muted ? '#e04b3d' : '#3ddc73', muteHover, '#0a0c10', 11);
+
+    ctx.fillStyle = '#2b2f38';
+    rrPath(ctx, strip.barX, strip.barY, strip.barW, strip.barH, 6);
+    ctx.fill();
+    ctx.fillStyle = this.settings.muted ? '#5b6069' : '#3d9bdc';
+    rrPath(ctx, strip.barX, strip.barY, strip.barW * this.settings.volume, strip.barH, 6);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+    ctx.lineWidth = 1.5;
+    rrPath(ctx, strip.barX, strip.barY, strip.barW, strip.barH, 6);
+    ctx.stroke();
+    ctx.fillStyle = '#f4efe6';
+    ctx.beginPath();
+    ctx.arc(strip.barX + strip.barW * this.settings.volume, strip.barY + strip.barH / 2, 7, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.textAlign = 'left';
+    ctx.font = '11px monospace';
+    ctx.fillStyle = '#8d97a5';
+    ctx.fillText(
+      `VOLUME ${Math.round(this.settings.volume * 100)}%  (drag the bar · ${formatKeyCode(this.keybinds.mute)} toggles mute)`,
+      strip.barX + strip.barW + 16,
+      strip.barY + 11,
+    );
+  }
+
+  /**
+   * Handles the mute button and the volume bar. The bar answers to a held mouse
+   * as well as a click, so the volume can be dragged rather than poked at.
+   */
+  private handleAudioStrip(strip: ReturnType<typeof Game.prototype.audioStrip>): boolean {
+    const mx = this.input.mouseX;
+    const my = this.input.mouseY;
+    const pressed = this.input.wasMousePressed();
+    if (pressed && mx >= strip.muteX && mx <= strip.muteX + strip.muteW && my >= strip.muteY && my <= strip.muteY + strip.muteH) {
+      this.toggleMute();
+      return true;
+    }
+    const onBar = mx >= strip.barX - 8 && mx <= strip.barX + strip.barW + 8
+      && my >= strip.barY - 12 && my <= strip.barY + strip.barH + 12;
+    if (onBar && (pressed || (this.input.mouseDown && this.draggingVolume))) {
+      this.draggingVolume = true;
+      this.settings.volume = Math.max(0, Math.min(1, (mx - strip.barX) / strip.barW));
+      this.settings.muted = false;
+      this.sfx.setMuted(false);
+      this.sfx.setVolume(this.settings.volume);
+      saveSettings(this.settings);
+      if (pressed) this.sfx.points();
+      return true;
+    }
+    if (!this.input.mouseDown) this.draggingVolume = false;
+    return false;
+  }
+
+  private keybindRows(startY: number, colW: number, rowH: number, x0: number, gap: number) {
+    const perCol = Math.ceil(ACTION_ORDER.length / 2);
+    return ACTION_ORDER.map((action, i) => {
+      const col = i < perCol ? 0 : 1;
+      const rowIdx = i < perCol ? i : i - perCol;
+      return { action, x: x0 + col * (colW + gap), y: startY + rowIdx * rowH, w: colW, h: rowH - 4 };
+    });
+  }
+
+  private drawKeybindRows(rows: ReturnType<typeof Game.prototype.keybindRows>) {
+    const ctx = this.ctx;
+    const mx = this.input.mouseX;
+    const my = this.input.mouseY;
+    for (const row of rows) {
+      const listening = this.listeningForAction === row.action;
+      const hover = mx >= row.x && mx <= row.x + row.w && my >= row.y && my <= row.y + row.h;
+      drawPanel(ctx, row.x, row.y, row.w, row.h,
+        listening ? 'rgba(255,210,61,0.14)' : hover ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.025)',
+        'rgba(255,255,255,0.08)', 1, 6);
+      ctx.textAlign = 'left';
+      ctx.font = '12px monospace';
+      ctx.fillStyle = '#f4efe6';
+      ctx.fillText(ACTION_LABELS[row.action], row.x + 14, row.y + row.h / 2 + 4);
+      drawKeyChip(ctx, row.x + row.w - 60, row.y + row.h / 2, listening ? '...' : formatKeyCode(this.keybinds[row.action] || '—'), listening);
+    }
+  }
+
+  private handleKeybindRows(rows: ReturnType<typeof Game.prototype.keybindRows>): boolean {
+    const mx = this.input.mouseX;
+    const my = this.input.mouseY;
+    for (const row of rows) {
+      if (mx >= row.x && mx <= row.x + row.w && my >= row.y && my <= row.y + row.h) {
+        this.listeningForAction = row.action;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Consumes the next key press for whatever binding is listening. */
+  private captureRebind(): boolean {
+    if (!this.listeningForAction) return false;
+    const code = this.input.justPressedCode();
+    if (code) {
+      if (code !== 'Escape') {
+        for (const a of ACTION_ORDER) {
+          if (a !== this.listeningForAction && this.keybinds[a] === code) this.keybinds[a] = '';
+        }
+        this.keybinds[this.listeningForAction] = code;
+        saveBindings(this.keybinds);
+      }
+      this.listeningForAction = null;
+    }
+    return true;
+  }
+
+  // ---------------- pause menu ----------------
+
+  private pauseLayout() {
+    const panelW = 1000;
+    const panelX = VIEW_W / 2 - panelW / 2;
+    return {
+      panelX,
+      panelY: 44,
+      panelW,
+      panelH: VIEW_H - 88,
+      strip: this.audioStrip(panelX + 40, 120, 320),
+      rows: this.keybindRows(190, 440, 30, panelX + 40, 40),
+    };
+  }
+
   private pauseButtons() {
-    const w = 300;
-    const h = 46;
-    const x = VIEW_W / 2 - w / 2;
+    const w = 220;
+    const h = 44;
+    const y = VIEW_H - 108;
+    const gap = 16;
+    const total = 3 * w + 2 * gap;
+    const x0 = VIEW_W / 2 - total / 2;
     return [
-      { key: 'resume' as const, label: 'RESUME', color: '#3ddc73', x, y: 330, w, h },
-      { key: 'binds' as const, label: 'CONTROLS & KEYBINDS', color: '#5fb8ff', x, y: 388, w, h },
-      { key: 'mute' as const, label: this.settings.muted ? 'UNMUTE AUDIO' : 'MUTE AUDIO', color: '#a24ddc', x, y: 446, w, h },
-      { key: 'quit' as const, label: this.isGuest ? 'LEAVE RUN' : 'END RUN & BANK', color: '#e04b3d', x, y: 504, w, h },
+      { key: 'resume' as const, label: 'RESUME', color: '#3ddc73', x: x0, y, w, h },
+      { key: 'reset' as const, label: 'RESET BINDINGS', color: '#ff9d2e', x: x0 + w + gap, y, w, h },
+      { key: 'quit' as const, label: this.isGuest ? 'LEAVE RUN' : 'END RUN & BANK', color: '#e04b3d', x: x0 + 2 * (w + gap), y, w, h },
     ];
   }
 
   private updatePauseMenu() {
+    if (this.captureRebind()) return;
+
+    const layout = this.pauseLayout();
+    if (this.handleAudioStrip(layout.strip)) return;
     if (!this.input.wasMousePressed()) return;
+    if (this.handleKeybindRows(layout.rows)) return;
+
     const mx = this.input.mouseX;
     const my = this.input.mouseY;
     for (const b of this.pauseButtons()) {
       if (mx < b.x || mx > b.x + b.w || my < b.y || my > b.y + b.h) continue;
       if (b.key === 'resume') this.paused = false;
-      else if (b.key === 'binds') this.openControls('playing');
-      else if (b.key === 'mute') this.toggleMute();
-      else if (b.key === 'quit') {
+      else if (b.key === 'reset') {
+        this.keybinds = { ...DEFAULT_BINDINGS };
+        saveBindings(this.keybinds);
+        this.notice('Bindings reset to defaults.');
+      } else if (b.key === 'quit') {
         this.paused = false;
         // A guest owns no simulation, so there is nothing to bank - dropping
         // the link is the only sane way out.
@@ -1425,77 +1576,74 @@ export class Game {
 
   private renderPauseMenu() {
     const ctx = this.ctx;
-    ctx.fillStyle = 'rgba(6,7,10,0.82)';
+    const layout = this.pauseLayout();
+    ctx.fillStyle = 'rgba(6,7,10,0.88)';
     ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+    drawPanel(ctx, layout.panelX, layout.panelY, layout.panelW, layout.panelH,
+      'rgba(24,19,14,0.92)', '#6f5a3f', 2.5, 10);
 
     ctx.textAlign = 'center';
     ctx.fillStyle = '#f4efe6';
-    ctx.font = 'bold 42px monospace';
-    ctx.fillText('PAUSED', VIEW_W / 2, 250);
+    ctx.font = 'bold 30px monospace';
+    ctx.fillText('PAUSED', VIEW_W / 2, layout.panelY + 44);
     ctx.font = '12px monospace';
     ctx.fillStyle = '#8d97a5';
     ctx.fillText(
       this.isGuest
         ? 'Co-op: the host keeps running — you have simply stopped acting.'
         : `Round ${this.round} · ${formatKeyCode(this.keybinds.pause)} or Esc to resume`,
-      VIEW_W / 2, 280,
+      VIEW_W / 2, layout.panelY + 66,
     );
+
+    ctx.textAlign = 'left';
+    ctx.font = 'bold 12px monospace';
+    ctx.fillStyle = '#ffd23d';
+    ctx.fillText('AUDIO', layout.strip.muteX, layout.strip.muteY - 10);
+    this.drawAudioStrip(layout.strip);
+
+    ctx.textAlign = 'left';
+    ctx.font = 'bold 12px monospace';
+    ctx.fillStyle = '#ffd23d';
+    ctx.fillText('KEYBINDS', layout.rows[0].x, layout.rows[0].y - 12);
+    this.drawKeybindRows(layout.rows);
 
     const mx = this.input.mouseX;
     const my = this.input.mouseY;
     for (const b of this.pauseButtons()) {
       const hover = mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h;
-      drawButton(ctx, b.x, b.y, b.w, b.h, b.label, b.color, hover, '#0a0c10', 14);
+      drawButton(ctx, b.x, b.y, b.w, b.h, b.label, b.color, hover, '#0a0c10', 13);
     }
 
     ctx.textAlign = 'center';
     ctx.font = '10px monospace';
     ctx.fillStyle = '#5b6069';
-    ctx.fillText('rebinding a key takes effect immediately — the run resumes exactly where you left it', VIEW_W / 2, 572);
+    ctx.fillText(
+      this.listeningForAction
+        ? 'Press any key to bind… (Esc cancels)'
+        : 'click a row then press a key — changes apply immediately and the run resumes where you left it',
+      VIEW_W / 2, VIEW_H - 56,
+    );
+    this.renderNotice();
   }
 
   // ---------------- controls / audio settings ----------------
 
+  private controlsLayout() {
+    return { strip: this.audioStrip(60, 66), rows: this.keybindRows(118, 560, 30, 60, 40) };
+  }
+
   private updateControls() {
-    if (this.listeningForAction) {
-      const code = this.input.justPressedCode();
-      if (code) {
-        if (code !== 'Escape') {
-          for (const a of ACTION_ORDER) {
-            if (a !== this.listeningForAction && this.keybinds[a] === code) this.keybinds[a] = '';
-          }
-          this.keybinds[this.listeningForAction] = code;
-          saveBindings(this.keybinds);
-        }
-        this.listeningForAction = null;
-      }
-      return;
-    }
+    if (this.captureRebind()) return;
 
     if (this.input.wasPressed('Escape')) {
       this.scene = this.controlsReturn;
       return;
     }
+    const layout = this.controlsLayout();
+    if (this.handleAudioStrip(layout.strip)) return;
     if (!this.input.wasMousePressed()) return;
     const mx = this.input.mouseX;
     const my = this.input.mouseY;
-
-    // audio strip
-    if (my >= 66 && my <= 94) {
-      if (mx >= 60 && mx <= 150) {
-        this.toggleMute();
-        return;
-      }
-      if (mx >= 170 && mx <= 470) {
-        this.settings.volume = Math.max(0, Math.min(1, (mx - 170) / 300));
-        this.settings.muted = false;
-        this.sfx.setMuted(false);
-        this.sfx.setVolume(this.settings.volume);
-        saveSettings(this.settings);
-        this.sfx.points();
-        return;
-      }
-    }
 
     if (mx >= VIEW_W / 2 - 190 && mx <= VIEW_W / 2 - 10 && my >= VIEW_H - 62 && my <= VIEW_H - 22) {
       this.keybinds = { ...DEFAULT_BINDINGS };
@@ -1507,20 +1655,7 @@ export class Game {
       this.scene = this.controlsReturn;
       return;
     }
-
-    const rowH = 30;
-    const startY = 118;
-    const colW = 560;
-    for (let i = 0; i < ACTION_ORDER.length; i++) {
-      const col = i < 9 ? 0 : 1;
-      const rowIdx = i < 9 ? i : i - 9;
-      const rx = 60 + col * (colW + 40);
-      const ry = startY + rowIdx * rowH;
-      if (mx >= rx && mx <= rx + colW && my >= ry && my <= ry + rowH - 4) {
-        this.listeningForAction = ACTION_ORDER[i];
-        return;
-      }
-    }
+    this.handleKeybindRows(layout.rows);
   }
 
   private updateResults() {
@@ -1565,7 +1700,7 @@ export class Game {
     this.particles.update(dt);
     this.pointFlyers.update(dt, this.players[0].x, this.players[0].y);
     this.camera.update(dt);
-    this.camera.follow(anchor.x, anchor.y, VIEW_W, VIEW_H, this.level.bounds());
+    this.camera.follow(anchor.x, anchor.y, VIEW_W, VIEW_H);
 
     if (this.killStreakTimer > 0) {
       this.killStreakTimer -= dt;
@@ -4300,50 +4435,11 @@ export class Game {
     ctx.font = 'bold 26px monospace';
     ctx.fillText('CONTROLS & AUDIO', VIEW_W / 2, 42);
 
-    // audio strip
     const mx = this.input.mouseX;
     const my = this.input.mouseY;
-    const muteHover = mx >= 60 && mx <= 150 && my >= 66 && my <= 94;
-    drawButton(ctx, 60, 66, 90, 28, this.settings.muted ? 'UNMUTE' : 'MUTE', this.settings.muted ? '#e04b3d' : '#3ddc73', muteHover, '#0a0c10', 11);
-
-    ctx.fillStyle = '#2b2f38';
-    rrPath(ctx, 170, 74, 300, 12, 6);
-    ctx.fill();
-    ctx.fillStyle = this.settings.muted ? '#5b6069' : '#3d9bdc';
-    rrPath(ctx, 170, 74, 300 * this.settings.volume, 12, 6);
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
-    ctx.lineWidth = 1.5;
-    rrPath(ctx, 170, 74, 300, 12, 6);
-    ctx.stroke();
-    ctx.fillStyle = '#f4efe6';
-    ctx.beginPath();
-    ctx.arc(170 + 300 * this.settings.volume, 80, 7, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.textAlign = 'left';
-    ctx.font = '11px monospace';
-    ctx.fillStyle = '#8d97a5';
-    ctx.fillText(`VOLUME ${Math.round(this.settings.volume * 100)}%  (click the bar to set · ${formatKeyCode(this.keybinds.mute)} toggles mute)`, 486, 84);
-
-    const rowH = 30;
-    const startY = 118;
-    const colW = 560;
-    ACTION_ORDER.forEach((action, i) => {
-      const col = i < 9 ? 0 : 1;
-      const rowIdx = i < 9 ? i : i - 9;
-      const rx = 60 + col * (colW + 40);
-      const ry = startY + rowIdx * rowH;
-      const listening = this.listeningForAction === action;
-      const hover = mx >= rx && mx <= rx + colW && my >= ry && my <= ry + rowH - 4;
-      drawPanel(ctx, rx, ry, colW, rowH - 4,
-        listening ? 'rgba(255,210,61,0.14)' : hover ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.025)',
-        'rgba(255,255,255,0.08)', 1, 6);
-      ctx.textAlign = 'left';
-      ctx.font = '12px monospace';
-      ctx.fillStyle = '#f4efe6';
-      ctx.fillText(ACTION_LABELS[action], rx + 14, ry + 18);
-      drawKeyChip(ctx, rx + colW - 60, ry + rowH / 2 - 2, listening ? '...' : formatKeyCode(this.keybinds[action] || '—'), listening);
-    });
+    const layout = this.controlsLayout();
+    this.drawAudioStrip(layout.strip);
+    this.drawKeybindRows(layout.rows);
 
     ctx.textAlign = 'center';
     ctx.font = '10px monospace';

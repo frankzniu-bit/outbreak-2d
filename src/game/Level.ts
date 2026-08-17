@@ -9,8 +9,7 @@ import {
   CORRIDOR_LEN,
   CORRIDOR_W,
   WALL_THICK,
-  DOOR_BASE_COST,
-  DOOR_COST_STEP,
+  doorCost,
   TILE,
 } from './constants';
 
@@ -364,7 +363,7 @@ export class Level {
       bh: horizontal ? corridor.h : WALL_THICK,
       cx,
       cy,
-      cost: DOOR_BASE_COST + depth * DOOR_COST_STEP,
+      cost: doorCost(depth),
       open: false,
     });
     a.links[side] = index;

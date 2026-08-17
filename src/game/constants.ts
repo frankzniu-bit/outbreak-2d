@@ -35,8 +35,17 @@ export const MELEE_ARC = Math.PI / 1.3;
 export const MELEE_DAMAGE = 45;
 export const MELEE_COOLDOWN = 0.5;
 
-export const DOOR_BASE_COST = 650;
-export const DOOR_COST_STEP = 500;
+// Doors are the main sink for points, and at 650 + 500/room the facility opened
+// up faster than rounds got harder - you could be three rooms deep by round 5.
+// The curve is now superlinear, so each ring costs more than the last by more
+// than a flat step and pushing deep has to be earned.
+export const DOOR_BASE_COST = 900;
+export const DOOR_COST_STEP = 650;
+export const DOOR_COST_CURVE = 90;
+
+export function doorCost(depth: number): number {
+  return DOOR_BASE_COST + depth * DOOR_COST_STEP + depth * depth * DOOR_COST_CURVE;
+}
 export const MYSTERY_BOX_BASE_COST = 400;
 export const MYSTERY_BOX_COST_STEP = 150;
 export const WORKBENCH_BASE_COST = 500;

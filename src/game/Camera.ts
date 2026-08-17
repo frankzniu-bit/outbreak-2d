@@ -1,5 +1,3 @@
-import type { Bounds } from './Level';
-
 export class Camera {
   x = 0;
   y = 0;
@@ -8,16 +6,15 @@ export class Camera {
   offsetX = 0;
   offsetY = 0;
 
-  /** The facility grows in every direction, so the camera clamps to its bounds. */
-  follow(targetX: number, targetY: number, viewW: number, viewH: number, bounds: Bounds) {
-    const spanX = bounds.maxX - bounds.minX;
-    const spanY = bounds.maxY - bounds.minY;
-    this.x = spanX <= viewW
-      ? bounds.minX + spanX / 2 - viewW / 2
-      : clamp(targetX - viewW / 2, bounds.minX, bounds.maxX - viewW);
-    this.y = spanY <= viewH
-      ? bounds.minY + spanY / 2 - viewH / 2
-      : clamp(targetY - viewH / 2, bounds.minY, bounds.maxY - viewH);
+  /**
+   * The player is always dead centre and the facility moves around them. Clamping
+   * to the level's bounds used to slide the player off-centre whenever they were
+   * near an edge of the generated map, which made the framing depend on which way
+   * the layout happened to grow.
+   */
+  follow(targetX: number, targetY: number, viewW: number, viewH: number) {
+    this.x = targetX - viewW / 2;
+    this.y = targetY - viewH / 2;
   }
 
   shake(magnitude: number, duration: number) {
@@ -38,8 +35,4 @@ export class Camera {
       }
     }
   }
-}
-
-function clamp(v: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, v));
 }
