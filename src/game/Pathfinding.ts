@@ -1,5 +1,5 @@
 import type { Wall } from './Level';
-import { WORLD_H } from './constants';
+import type { Vec2 } from './types';
 
 /**
  * Navigation grid resolution. Half a wall tile, so a one-tile gap is still two
@@ -25,11 +25,6 @@ const DIRS: ReadonlyArray<readonly [number, number, number]> = [
   [-1, -1, Math.SQRT2],
 ];
 
-export interface Vec2 {
-  x: number;
-  y: number;
-}
-
 /**
  * A Dijkstra distance field flooded outward from the players over a window of
  * rooms around them. Enemies read the gradient instead of steering straight at
@@ -42,6 +37,7 @@ export class FlowField {
   cols = 0;
   rows = 0;
   originX = 0;
+  originY = 0;
   private blocked = new Uint8Array(0);
   private dist = new Float32Array(0);
   private heap: number[] = [];
@@ -52,11 +48,12 @@ export class FlowField {
     return this.built;
   }
 
-  build(walls: Wall[], originX: number, spanW: number, sources: Vec2[]) {
+  build(walls: Wall[], originX: number, originY: number, spanW: number, spanH: number, sources: Vec2[]) {
     this.built = false;
     this.originX = originX;
+    this.originY = originY;
     this.cols = Math.max(1, Math.ceil(spanW / NAV_CELL));
-    this.rows = Math.max(1, Math.ceil(WORLD_H / NAV_CELL));
+    this.rows = Math.max(1, Math.ceil(spanH / NAV_CELL));
     const total = this.cols * this.rows;
     if (this.blocked.length !== total) {
       this.blocked = new Uint8Array(total);
@@ -70,8 +67,8 @@ export class FlowField {
     for (const w of walls) {
       const c0 = Math.floor((w.x - NAV_PAD - this.originX) / NAV_CELL);
       const c1 = Math.floor((w.x + w.w + NAV_PAD - this.originX) / NAV_CELL);
-      const r0 = Math.floor((w.y - NAV_PAD) / NAV_CELL);
-      const r1 = Math.floor((w.y + w.h + NAV_PAD) / NAV_CELL);
+      const r0 = Math.floor((w.y - NAV_PAD - this.originY) / NAV_CELL);
+      const r1 = Math.floor((w.y + w.h + NAV_PAD - this.originY) / NAV_CELL);
       for (let r = Math.max(0, r0); r <= Math.min(this.rows - 1, r1); r++) {
         const rowBase = r * this.cols;
         for (let c = Math.max(0, c0); c <= Math.min(this.cols - 1, c1); c++) {
@@ -115,15 +112,9 @@ export class FlowField {
     this.built = true;
   }
 
-  covers(x: number): boolean {
-    if (!this.built) return false;
-    const c = Math.floor((x - this.originX) / NAV_CELL);
-    return c >= 0 && c < this.cols;
-  }
-
   private cellAt(x: number, y: number): number {
     const c = Math.floor((x - this.originX) / NAV_CELL);
-    const r = Math.floor(y / NAV_CELL);
+    const r = Math.floor((y - this.originY) / NAV_CELL);
     if (c < 0 || r < 0 || c >= this.cols || r >= this.rows) return -1;
     return r * this.cols + c;
   }
@@ -133,7 +124,7 @@ export class FlowField {
   }
 
   private centerY(idx: number): number {
-    return Math.floor(idx / this.cols) * NAV_CELL + NAV_CELL / 2;
+    return this.originY + Math.floor(idx / this.cols) * NAV_CELL + NAV_CELL / 2;
   }
 
   /**
@@ -143,7 +134,7 @@ export class FlowField {
    */
   private freeCellNear(x: number, y: number): number {
     const c0 = Math.floor((x - this.originX) / NAV_CELL);
-    const r0 = Math.floor(y / NAV_CELL);
+    const r0 = Math.floor((y - this.originY) / NAV_CELL);
     for (let ring = 0; ring <= 3; ring++) {
       for (let dr = -ring; dr <= ring; dr++) {
         for (let dc = -ring; dc <= ring; dc++) {

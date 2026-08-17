@@ -1,3 +1,5 @@
+import type { Bounds } from './Level';
+
 export class Camera {
   x = 0;
   y = 0;
@@ -6,9 +8,16 @@ export class Camera {
   offsetX = 0;
   offsetY = 0;
 
-  follow(targetX: number, targetY: number, viewW: number, viewH: number, worldW: number, worldH: number) {
-    this.x = clamp(targetX - viewW / 2, 0, Math.max(0, worldW - viewW));
-    this.y = clamp(targetY - viewH / 2, 0, Math.max(0, worldH - viewH));
+  /** The facility grows in every direction, so the camera clamps to its bounds. */
+  follow(targetX: number, targetY: number, viewW: number, viewH: number, bounds: Bounds) {
+    const spanX = bounds.maxX - bounds.minX;
+    const spanY = bounds.maxY - bounds.minY;
+    this.x = spanX <= viewW
+      ? bounds.minX + spanX / 2 - viewW / 2
+      : clamp(targetX - viewW / 2, bounds.minX, bounds.maxX - viewW);
+    this.y = spanY <= viewH
+      ? bounds.minY + spanY / 2 - viewH / 2
+      : clamp(targetY - viewH / 2, bounds.minY, bounds.maxY - viewH);
   }
 
   shake(magnitude: number, duration: number) {

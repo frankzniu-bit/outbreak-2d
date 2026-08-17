@@ -2,7 +2,7 @@ import { Input } from './Input';
 import { Camera } from './Camera';
 import { Particles, PointFlyers } from './Particles';
 import { Sfx } from './Audio';
-import { Level, resolveWallCollisions, circleRectCollide, sweepTo, type Station, type RoomInfo, type DoorInfo } from './Level';
+import { Level, resolveWallCollisions, circleRectCollide, sweepTo, type Station, type RoomInfo, type DoorInfo, type Corridor } from './Level';
 import { Player, Enemy, enemyColor, PLAYER_RADIUS, type EnemyProjectile, type Turret, type PowerUp } from './Entities';
 import {
   Companion,
@@ -15,7 +15,7 @@ import {
 } from './Companions';
 import { CHARACTER_DEFS, CHARACTER_ORDER, type CharacterDef } from './Characters';
 import { pickEnemyKind, createEnemy, createBoss, BossBag, BOSS_DEFS } from './Enemies';
-import { FlowField, type Vec2 } from './Pathfinding';
+import { FlowField } from './Pathfinding';
 import {
   WEAPON_DEFS,
   rollWeapon,
@@ -68,11 +68,14 @@ import {
   type FieldUpgrade,
   type PowerUpKind,
   type BossType,
+  type Vec2,
   type WeaponRoll,
 } from './types';
 import {
-  WORLD_H,
   ROOM_W,
+  ROOM_H,
+  CELL_W,
+  CELL_H,
   NAV_REBUILD_INTERVAL,
   VIEW_W,
   VIEW_H,
@@ -250,6 +253,9 @@ export class Game {
   /** Shared chase field: one flood from the players serves every enemy. */
   private navField = new FlowField();
   private navTimer = 0;
+  /** Coarse tier: per-room, the door to take toward the players. */
+  private navRoute: Int32Array | null = null;
+  private navHomeRoom = 0;
   private projectiles: Projectile[] = [];
   private enemyProjectiles: EnemyProjectile[] = [];
   private pendingAirstrike: { x: number; y: number; timer: number } | null = null;
@@ -404,6 +410,7 @@ export class Game {
       lv: {
         rooms: this.level.rooms,
         doors: this.level.doors,
+        corridors: this.level.corridors,
         stations: this.level.stations,
       },
       h: {
@@ -517,7 +524,7 @@ export class Game {
     });
 
     const lv = msg.lv as Record<string, unknown>;
-    this.level.hydrate(lv.rooms as RoomInfo[], lv.doors as DoorInfo[], lv.stations as Station[]);
+    this.level.hydrate(lv.rooms as RoomInfo[], lv.doors as DoorInfo[], lv.corridors as Corridor[], lv.stations as Station[]);
 
     const h = msg.h as Record<string, number>;
     this.round = h.rd;
@@ -710,7 +717,7 @@ export class Game {
         t: 'in', mx: +inp.mx.toFixed(2), my: +inp.my.toFixed(2), aim: +inp.aim.toFixed(2),
         fh: inp.fireHeld, ih: inp.interactHeld, c: this.localEdges,
       });
-      this.camera.follow(p.x, p.y, VIEW_W, VIEW_H, this.level.totalWidth(), WORLD_H);
+      this.camera.follow(p.x, p.y, VIEW_W, VIEW_H, this.level.bounds());
     }
     this.particles.update(dt);
     this.camera.update(dt);
@@ -851,7 +858,7 @@ export class Game {
     if (!this.guestCharId) return;
     const def = CHARACTER_DEFS[this.guestCharId];
     const fx = { ...computeEffects([]), ...(this.guestEffects ?? {}) };
-    const p = new Player(1, 160, WORLD_H / 2 + 60, def, fx);
+    const p = new Player(1, ROOM_W / 2 + 40, ROOM_H / 2 + 60, def, fx);
     p.ultimateUnlocked = true;
     p.points = this.players[0]?.points ?? 0;
     this.players[1] = p;
@@ -862,7 +869,7 @@ export class Game {
     this.level = new Level();
     this.mysteryBox = new MysteryBox();
     // a per-run copy so in-run field upgrades never write back into meta progression
-    const p0 = new Player(0, 120, WORLD_H / 2, def, { ...this.effects });
+    const p0 = new Player(0, ROOM_W / 2, ROOM_H / 2, def, { ...this.effects });
     p0.ultimateUnlocked = this.meta.ultimatesUnlocked[def.id];
     this.players = [p0];
     this.localIndex = 0;
@@ -872,7 +879,7 @@ export class Game {
     // stack into one silhouette.
     const deployed = activeCompanions(this.meta, this.effects.deployLimit);
     this.companions = deployed.map((save, i) => {
-      const c = new Companion(90, WORLD_H / 2 + 50, save);
+      const c = new Companion(ROOM_W / 2 - 30, ROOM_H / 2 + 50, save);
       c.followAngleOffset = Math.PI * 0.75 + (i * Math.PI * 2) / Math.max(1, deployed.length);
       return c;
     });
@@ -1558,7 +1565,7 @@ export class Game {
     this.particles.update(dt);
     this.pointFlyers.update(dt, this.players[0].x, this.players[0].y);
     this.camera.update(dt);
-    this.camera.follow(anchor.x, anchor.y, VIEW_W, VIEW_H, this.level.totalWidth(), WORLD_H);
+    this.camera.follow(anchor.x, anchor.y, VIEW_W, VIEW_H, this.level.bounds());
 
     if (this.killStreakTimer > 0) {
       this.killStreakTimer -= dt;
@@ -1758,20 +1765,29 @@ export class Game {
     this.sfx.roundStart();
   }
 
-  private getSpawnPoints(): { x: number; y: number }[] {
-    const pts = [{ x: 60, y: 60 }, { x: 60, y: WORLD_H - 60 }];
-    this.level.rooms.forEach((room, i) => {
-      if (i === 0) return;
-      if (this.level.doors[i - 1]?.open) {
-        pts.push(
-          { x: room.xStart + 60, y: 60 },
-          { x: room.xStart + 60, y: WORLD_H - 60 },
-          { x: room.xEnd - 60, y: 60 },
-          { x: room.xEnd - 60, y: WORLD_H - 60 },
-        );
-      }
-    });
-    return pts;
+  /**
+   * Corners of the room the players are in and the ones next door. The facility
+   * branches now, so seeding a wave across every room ever opened would strand
+   * half the round several chambers away.
+   */
+  private getSpawnPoints(): Vec2[] {
+    const anchor = this.players.find((p) => p.alive) ?? this.players[0];
+    const here = this.level.roomIndexAt(anchor.x, anchor.y);
+    const rooms = this.level.roomAndNeighbours(here).filter((r) => r.reached);
+    const pts: Vec2[] = [];
+    const inset = 70;
+    for (const room of rooms) {
+      pts.push(
+        { x: room.x + inset, y: room.y + inset },
+        { x: room.x + room.w - inset, y: room.y + inset },
+        { x: room.x + inset, y: room.y + room.h - inset },
+        { x: room.x + room.w - inset, y: room.y + room.h - inset },
+      );
+    }
+    // spawning on top of the player is worse than spawning close, so drop the
+    // corner they're standing in
+    const clear = pts.filter((pt) => Math.hypot(pt.x - anchor.x, pt.y - anchor.y) > 140);
+    return clear.length ? clear : pts;
   }
 
   // ---------------- per-player simulation ----------------
@@ -1802,7 +1818,7 @@ export class Game {
       const crawl = 62;
       const nx = p.x + inp.mx * crawl * dt;
       const ny = p.y + inp.my * crawl * dt;
-      const res = resolveWallCollisions(nx, ny, PLAYER_RADIUS, this.level.wallsNear(p.x));
+      const res = resolveWallCollisions(nx, ny, PLAYER_RADIUS, this.level.wallsNear(p.x, p.y));
       p.x = res.x;
       p.y = res.y;
       return;
@@ -1834,7 +1850,7 @@ export class Game {
       vy = inp.my * moveSpeed;
     }
 
-    const res = resolveWallCollisions(p.x + vx * dt, p.y + vy * dt, PLAYER_RADIUS, this.level.wallsNear(p.x));
+    const res = resolveWallCollisions(p.x + vx * dt, p.y + vy * dt, PLAYER_RADIUS, this.level.wallsNear(p.x, p.y));
     p.x = res.x;
     p.y = res.y;
 
@@ -2061,7 +2077,7 @@ export class Game {
         const tx = p.x + Math.cos(p.aimAngle) * dist;
         const ty = p.y + Math.sin(p.aimAngle) * dist;
         this.particles.burst(p.x, p.y, '#b06bff', 18, 200);
-        const res = sweepTo(p.x, p.y, tx, ty, PLAYER_RADIUS, this.level.wallsNear(p.x));
+        const res = sweepTo(p.x, p.y, tx, ty, PLAYER_RADIUS, this.level.wallsNear(p.x, p.y));
         p.x = res.x;
         p.y = res.y;
         p.iframeTimer = Math.max(p.iframeTimer, 0.25);
@@ -2239,8 +2255,8 @@ export class Game {
         this.camera.shake(4, 0.2);
         this.sfx.doorOpen();
         const d = this.level.doors[doorIdx];
-        this.particles.burst(d.x, (d.gapTop + d.gapBottom) / 2, '#ffb84d', 20, 200);
-        this.pushEvent(d.x, (d.gapTop + d.gapBottom) / 2, '#ffb84d', 20);
+        this.particles.burst(d.cx, d.cy, '#ffb84d', 20, 200);
+        this.pushEvent(d.cx, d.cy, '#ffb84d', 20);
       }
       return;
     }
@@ -2483,24 +2499,38 @@ export class Game {
     this.navTimer = NAV_REBUILD_INTERVAL;
 
     const sources: Vec2[] = [];
-    let loRoom = Infinity;
-    let hiRoom = -Infinity;
+    let loCol = Infinity;
+    let hiCol = -Infinity;
+    let loRow = Infinity;
+    let hiRow = -Infinity;
     for (const p of this.players) {
       if (!p.alive) continue;
       sources.push({ x: p.x, y: p.y });
-      const idx = this.level.roomIndexAt(p.x);
-      loRoom = Math.min(loRoom, idx);
-      hiRoom = Math.max(hiRoom, idx);
+      const col = Math.floor(p.x / CELL_W);
+      const row = Math.floor(p.y / CELL_H);
+      loCol = Math.min(loCol, col);
+      hiCol = Math.max(hiCol, col);
+      loRow = Math.min(loRow, row);
+      hiRow = Math.max(hiRow, row);
     }
     if (sources.length === 0) return;
 
-    // A room of slack either side, capped so a split co-op team can't grow the
+    // A cell of slack all round, capped so a split co-op team can't grow the
     // flood without bound. Anything outside the window falls back to direct
     // steering, which is fine - it has no walls to negotiate at that range yet.
-    hiRoom = Math.min(hiRoom, loRoom + 2);
-    const lo = Math.max(0, (loRoom - 1) * ROOM_W);
-    const hi = Math.min(this.level.totalWidth(), (hiRoom + 2) * ROOM_W);
-    this.navField.build(this.level.wallsInRange(lo, hi), lo, hi - lo, sources);
+    hiCol = Math.min(hiCol, loCol + 1);
+    hiRow = Math.min(hiRow, loRow + 1);
+    const x0 = (loCol - 1) * CELL_W;
+    const y0 = (loRow - 1) * CELL_H;
+    const x1 = (hiCol + 2) * CELL_W;
+    const y1 = (hiRow + 2) * CELL_H;
+    this.navField.build(this.level.wallsInBox(x0, y0, x1, y1), x0, y0, x1 - x0, y1 - y0, sources);
+
+    const anchor = this.players.find((p) => p.alive);
+    if (anchor) {
+      this.navHomeRoom = this.level.roomIndexAt(anchor.x, anchor.y);
+      this.navRoute = this.level.routeTo(this.navHomeRoom);
+    }
   }
 
   /**
@@ -2516,7 +2546,21 @@ export class Game {
     const dist = Math.hypot(dx, dy) || 1;
     const direct = { x: dx / dist, y: dy / dist };
     if (this.navField.lineIsClear(e.x, e.y, target.x, target.y)) return direct;
-    return this.navField.directionAt(e.x, e.y) ?? direct;
+    const flow = this.navField.directionAt(e.x, e.y);
+    if (flow) return flow;
+
+    // Too far out for the flow field: fall back to the room graph and head for
+    // the doorway that leads one room closer, until the field picks it up.
+    const room = this.level.roomIndexAt(e.x, e.y);
+    const doorIdx = this.navRoute?.[room] ?? -1;
+    if (doorIdx >= 0) {
+      const d = this.level.doors[doorIdx];
+      const ddx = d.cx - e.x;
+      const ddy = d.cy - e.y;
+      const dd = Math.hypot(ddx, ddy) || 1;
+      return { x: ddx / dd, y: ddy / dd };
+    }
+    return direct;
   }
 
   /** Light crowd pressure so a pack doesn't fuse into one body in a doorway. */
@@ -2551,7 +2595,7 @@ export class Game {
   private moveEnemy(e: Enemy, vx: number, vy: number, dt: number) {
     const startX = e.x;
     const startY = e.y;
-    const res = resolveWallCollisions(e.x + vx * dt, e.y + vy * dt, e.radius, this.level.wallsNear(e.x));
+    const res = resolveWallCollisions(e.x + vx * dt, e.y + vy * dt, e.radius, this.level.wallsNear(e.x, e.y));
     e.x = res.x;
     e.y = res.y;
 
@@ -2770,7 +2814,7 @@ export class Game {
         e.bossTimer -= dt;
         const step = Math.min(BOSS_LUNGE_SPEED * dt, e.lungeRemaining);
         e.lungeRemaining -= step;
-        const res = sweepTo(e.x, e.y, e.x + e.lungeDirX * step, e.y + e.lungeDirY * step, e.radius, this.level.wallsNear(e.x));
+        const res = sweepTo(e.x, e.y, e.x + e.lungeDirX * step, e.y + e.lungeDirY * step, e.radius, this.level.wallsNear(e.x, e.y));
         const blocked = Math.hypot(res.x - e.x, res.y - e.y) < step - 0.5;
         e.x = res.x;
         e.y = res.y;
@@ -2854,7 +2898,7 @@ export class Game {
         const dx = target.x - e.x;
         const dy = target.y - e.y;
         const d = Math.hypot(dx, dy) || 1;
-        const dest = sweepTo(e.x, e.y, e.x + (dx / d) * 220, e.y + (dy / d) * 220, e.radius, this.level.wallsNear(e.x));
+        const dest = sweepTo(e.x, e.y, e.x + (dx / d) * 220, e.y + (dy / d) * 220, e.radius, this.level.wallsNear(e.x, e.y));
         e.x = dest.x;
         e.y = dest.y;
         this.particles.burst(e.x, e.y, '#c94ba0', 24, 220);
@@ -2926,7 +2970,7 @@ export class Game {
         proj.alive = false;
         continue;
       }
-      for (const w of this.level.wallsNear(proj.x)) {
+      for (const w of this.level.wallsNear(proj.x, proj.y)) {
         if (circleRectCollide(proj.x, proj.y, proj.radius, w)) {
           proj.alive = false;
           break;
@@ -2952,17 +2996,17 @@ export class Game {
   }
 
   private updateProjectiles(dt: number) {
-    const totalW = this.level.totalWidth();
+    const b = this.level.bounds();
     for (const proj of this.projectiles) {
       if (!proj.alive) continue;
       proj.x += proj.vx * dt;
       proj.y += proj.vy * dt;
       proj.distanceLeft -= Math.hypot(proj.vx, proj.vy) * dt;
-      if (proj.distanceLeft <= 0 || proj.x < 0 || proj.x > totalW || proj.y < 0 || proj.y > WORLD_H) {
+      if (proj.distanceLeft <= 0 || proj.x < b.minX || proj.x > b.maxX || proj.y < b.minY || proj.y > b.maxY) {
         proj.alive = false;
         continue;
       }
-      for (const w of this.level.wallsNear(proj.x)) {
+      for (const w of this.level.wallsNear(proj.x, proj.y)) {
         if (circleRectCollide(proj.x, proj.y, proj.radius, w)) {
           proj.alive = false;
           break;
@@ -3168,38 +3212,59 @@ export class Game {
     };
   }
 
+  /**
+   * Floor is painted per room and per corridor rather than across the whole
+   * world: the space between chambers is void, and leaving it black is what
+   * gives the facility its shape from a distance.
+   */
   private renderFloor() {
     const ctx = this.ctx;
-    const totalW = this.level.totalWidth();
-    const viewStart = Math.max(0, this.camera.x - 60);
-    const viewEnd = Math.min(totalW, this.camera.x + VIEW_W + 60);
-    ctx.fillStyle = '#12151c';
-    ctx.fillRect(viewStart, 0, viewEnd - viewStart, WORLD_H);
+    const vx0 = this.camera.x - 60;
+    const vy0 = this.camera.y - 60;
+    const vx1 = this.camera.x + VIEW_W + 60;
+    const vy1 = this.camera.y + VIEW_H + 60;
 
-    // chequered floor tiles, brighter than the old grid so the room reads
+    const patches: { x: number; y: number; w: number; h: number }[] = [];
+    for (const r of this.level.rooms) patches.push({ x: r.x, y: r.y, w: r.w, h: r.h });
+    for (const c of this.level.corridors) patches.push(c);
+
     const TILE = 48;
-    const startTx = Math.floor(viewStart / TILE);
-    const endTx = Math.ceil(viewEnd / TILE);
-    for (let tx = startTx; tx < endTx; tx++) {
-      for (let ty = 0; ty < WORLD_H / TILE; ty++) {
-        const alt = (tx + ty) % 2 === 0;
-        ctx.fillStyle = alt ? '#171b24' : '#141821';
-        ctx.fillRect(tx * TILE, ty * TILE, TILE, TILE);
+    for (const patch of patches) {
+      if (patch.x > vx1 || patch.x + patch.w < vx0 || patch.y > vy1 || patch.y + patch.h < vy0) continue;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(patch.x, patch.y, patch.w, patch.h);
+      ctx.clip();
+
+      ctx.fillStyle = '#12151c';
+      ctx.fillRect(patch.x, patch.y, patch.w, patch.h);
+
+      // chequered floor tiles, brighter than a flat fill so the room reads
+      const tx0 = Math.floor(patch.x / TILE);
+      const tx1 = Math.ceil((patch.x + patch.w) / TILE);
+      const ty0 = Math.floor(patch.y / TILE);
+      const ty1 = Math.ceil((patch.y + patch.h) / TILE);
+      for (let tx = tx0; tx < tx1; tx++) {
+        for (let ty = ty0; ty < ty1; ty++) {
+          ctx.fillStyle = (tx + ty) % 2 === 0 ? '#171b24' : '#141821';
+          ctx.fillRect(tx * TILE, ty * TILE, TILE, TILE);
+        }
       }
-    }
-    ctx.strokeStyle = 'rgba(255,255,255,0.028)';
-    ctx.lineWidth = 1;
-    for (let tx = startTx; tx < endTx; tx++) {
-      ctx.beginPath();
-      ctx.moveTo(tx * TILE, 0);
-      ctx.lineTo(tx * TILE, WORLD_H);
-      ctx.stroke();
-    }
-    for (let ty = 0; ty <= WORLD_H / TILE; ty++) {
-      ctx.beginPath();
-      ctx.moveTo(viewStart, ty * TILE);
-      ctx.lineTo(viewEnd, ty * TILE);
-      ctx.stroke();
+      ctx.strokeStyle = 'rgba(255,255,255,0.028)';
+      ctx.lineWidth = 1;
+      for (let tx = tx0; tx <= tx1; tx++) {
+        ctx.beginPath();
+        ctx.moveTo(tx * TILE, patch.y);
+        ctx.lineTo(tx * TILE, patch.y + patch.h);
+        ctx.stroke();
+      }
+      for (let ty = ty0; ty <= ty1; ty++) {
+        ctx.beginPath();
+        ctx.moveTo(patch.x, ty * TILE);
+        ctx.lineTo(patch.x + patch.w, ty * TILE);
+        ctx.stroke();
+      }
+      ctx.restore();
     }
   }
 

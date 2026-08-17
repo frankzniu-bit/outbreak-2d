@@ -2,7 +2,7 @@ import { WEAPON_DEFS, rarityColor } from './Weapons';
 import type { Player } from './Entities';
 import type { Level } from './Level';
 import type { Rarity } from './types';
-import { VIEW_W, VIEW_H, ROOM_W, DOWN_BLEEDOUT } from './constants';
+import { VIEW_W, VIEW_H, DOWN_BLEEDOUT } from './constants';
 
 export interface HudPartner {
   name: string;
@@ -237,11 +237,14 @@ export function drawHud(ctx: CanvasRenderingContext2D, player: Player, level: Le
   }
 
   // ---------- minimap ----------
-  const boxSize = 30;
-  const gap = 5;
-  const roomsToShow = 5;
-  const mmW = roomsToShow * boxSize + (roomsToShow - 1) * gap + 20;
-  const mmH = boxSize + 12;
+  // The facility branches in four directions now, so the map is a small plan
+  // view of the cells around you rather than a strip of rooms.
+  const boxSize = 26;
+  const gap = 10;
+  const span = 2; // cells shown either side of the player
+  const cells = span * 2 + 1;
+  const mmW = cells * boxSize + (cells - 1) * gap + 20;
+  const mmH = mmW;
   const mmX = VIEW_W - mmW - 16;
   const mmY = 16;
 
@@ -253,38 +256,55 @@ export function drawHud(ctx: CanvasRenderingContext2D, player: Player, level: Le
   rr(ctx, mmX, mmY, mmW, mmH, 7);
   ctx.stroke();
 
-  const currentRoomIdx = Math.min(level.rooms.length - 1, Math.max(0, Math.floor(player.x / ROOM_W)));
-  let startIdx = currentRoomIdx - 2;
-  if (startIdx < 0) startIdx = 0;
-  if (startIdx + roomsToShow > level.rooms.length) startIdx = Math.max(0, level.rooms.length - roomsToShow);
-  const firstX = mmX + 10;
+  const currentIdx = level.roomIndexAt(player.x, player.y);
+  const current = level.rooms[currentIdx];
+  const boxX = (col: number) => mmX + 10 + (col - current.col + span) * (boxSize + gap);
+  const boxY = (row: number) => mmY + 10 + (row - current.row + span) * (boxSize + gap);
+  const onMap = (col: number, row: number) =>
+    Math.abs(col - current.col) <= span && Math.abs(row - current.row) <= span;
 
-  for (let i = 0; i < roomsToShow; i++) {
-    const roomIdx = startIdx + i;
-    const room = level.rooms[roomIdx];
-    if (!room) continue;
-    const bx = firstX + i * (boxSize + gap);
-    const by = mmY + 6;
-    const isCurrent = roomIdx === currentRoomIdx;
+  // corridors first, so room boxes sit on top of them
+  for (const door of level.doors) {
+    const a = level.rooms[door.a];
+    const b = level.rooms[door.b];
+    if (!a || !b) continue;
+    if (!a.reached && !b.reached) continue;
+    if (!onMap(a.col, a.row) || !onMap(b.col, b.row)) continue;
+    ctx.strokeStyle = door.open ? '#3ddc73' : 'rgba(255,210,61,0.5)';
+    ctx.lineWidth = door.open ? 2.5 : 2;
+    ctx.beginPath();
+    ctx.moveTo(boxX(a.col) + boxSize / 2, boxY(a.row) + boxSize / 2);
+    ctx.lineTo(boxX(b.col) + boxSize / 2, boxY(b.row) + boxSize / 2);
+    ctx.stroke();
+  }
 
-    ctx.fillStyle = isCurrent ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.05)';
+  for (const room of level.rooms) {
+    if (!onMap(room.col, room.row)) continue;
+    // rooms you haven't opened up are only hinted at
+    const known = room.reached;
+    const bx = boxX(room.col);
+    const by = boxY(room.row);
+    const isCurrent = room.index === currentIdx;
+
+    ctx.fillStyle = isCurrent ? 'rgba(255,255,255,0.18)' : known ? 'rgba(255,255,255,0.07)' : 'rgba(255,255,255,0.02)';
     rr(ctx, bx, by, boxSize, boxSize, 4);
     ctx.fill();
-    ctx.strokeStyle = isCurrent ? player.character.color : 'rgba(255,255,255,0.26)';
+    ctx.strokeStyle = isCurrent ? player.character.color : known ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.12)';
     ctx.lineWidth = isCurrent ? 2 : 1;
     rr(ctx, bx, by, boxSize, boxSize, 4);
     ctx.stroke();
+    if (!known) continue;
 
-    const station = level.stations.find((s) => s.roomIndex === roomIdx && !s.collected);
+    const station = level.stations.find((s) => s.roomIndex === room.index && !s.collected);
     if (station) {
       ctx.fillStyle = STATION_COLOR[station.kind] ?? '#e8e8ea';
-      ctx.fillRect(bx + 4, by + 4, 6, 6);
+      ctx.fillRect(bx + 4, by + 4, 5, 5);
     }
-    // enemy pips, positioned within the room box so you can read where they are
+    // enemy pips, placed within the room box so you can read where they are
     for (const en of hud.enemyPositions) {
-      if (Math.floor(en.x / ROOM_W) !== roomIdx) continue;
-      const ex = bx + 2 + ((en.x - roomIdx * ROOM_W) / ROOM_W) * (boxSize - 4);
-      const ey = by + 2 + (en.y / 1000) * (boxSize - 4);
+      if (en.x < room.x || en.x > room.x + room.w || en.y < room.y || en.y > room.y + room.h) continue;
+      const ex = bx + 2 + ((en.x - room.x) / room.w) * (boxSize - 4);
+      const ey = by + 2 + ((en.y - room.y) / room.h) * (boxSize - 4);
       ctx.fillStyle = en.boss ? '#ff3b2f' : '#e8455a';
       ctx.beginPath();
       ctx.arc(ex, ey, en.boss ? 2.6 : 1.5, 0, Math.PI * 2);
@@ -294,17 +314,14 @@ export function drawHud(ctx: CanvasRenderingContext2D, player: Player, level: Le
     if (isCurrent) {
       ctx.fillStyle = player.character.color;
       ctx.beginPath();
-      ctx.arc(bx + boxSize / 2, by + boxSize / 2, 3, 0, Math.PI * 2);
+      ctx.arc(
+        bx + 2 + ((player.x - room.x) / room.w) * (boxSize - 4),
+        by + 2 + ((player.y - room.y) / room.h) * (boxSize - 4),
+        3,
+        0,
+        Math.PI * 2,
+      );
       ctx.fill();
-    }
-    if (i < roomsToShow - 1 && level.rooms[roomIdx + 1]) {
-      const door = level.doors[roomIdx];
-      ctx.strokeStyle = door && door.open ? '#3ddc73' : 'rgba(255,255,255,0.22)';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(bx + boxSize, by + boxSize / 2);
-      ctx.lineTo(bx + boxSize + gap, by + boxSize / 2);
-      ctx.stroke();
     }
   }
 

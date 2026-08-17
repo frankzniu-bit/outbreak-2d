@@ -1,5 +1,18 @@
-export const ROOM_W = 900;
-export const WORLD_H = 1000;
+// --- facility grid ---------------------------------------------------------
+// Rooms sit on an integer grid of cells and are smaller than their cell; the
+// slack between them is where the connecting corridors run.
+export const WALL_THICK = 24;
+/** Room interior, in 50px wall tiles. */
+export const ROOM_TILES_X = 12;
+export const ROOM_TILES_Y = 10;
+export const ROOM_W = ROOM_TILES_X * 50 + WALL_THICK * 2;
+export const ROOM_H = ROOM_TILES_Y * 50 + WALL_THICK * 2;
+/** Clear space between two neighbouring rooms - the corridor length. */
+export const CORRIDOR_LEN = 260;
+/** Walkable width of a corridor. */
+export const CORRIDOR_W = 140;
+export const CELL_W = ROOM_W + CORRIDOR_LEN;
+export const CELL_H = ROOM_H + CORRIDOR_LEN;
 
 export const VIEW_W = 1280;
 export const VIEW_H = 720;
