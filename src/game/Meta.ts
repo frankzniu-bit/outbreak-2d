@@ -1,13 +1,12 @@
 import { RARITY_WEIGHTS, RARITY_ORDER, type CharacterId, type Rarity } from './types';
-import { META_STORAGE_KEY } from './constants';
+import { META_STORAGE_KEY, SETTINGS_STORAGE_KEY } from './constants';
 
 export interface MetaState {
   essence: number;
   tokens: number;
   ultimatesUnlocked: Record<CharacterId, boolean>;
-  maxHpBoostTier: number;
-  startPointsBoostTier: number;
-  dashCooldownBoostTier: number;
+  classesUnlocked: Record<CharacterId, boolean>;
+  skills: string[];
   companionLevel: number;
   companionRarity: Rarity;
   companionBoxPulls: number;
@@ -17,10 +16,9 @@ function defaultMeta(): MetaState {
   return {
     essence: 0,
     tokens: 0,
-    ultimatesUnlocked: { recon: false, brawler: false, medic: false },
-    maxHpBoostTier: 0,
-    startPointsBoostTier: 0,
-    dashCooldownBoostTier: 0,
+    ultimatesUnlocked: { recon: false, brawler: false, medic: false, phantom: false, warden: false, revenant: false },
+    classesUnlocked: { recon: true, brawler: true, medic: true, phantom: false, warden: false, revenant: false },
+    skills: [],
     companionLevel: 0,
     companionRarity: 'common',
     companionBoxPulls: 0,
@@ -28,13 +26,20 @@ function defaultMeta(): MetaState {
 }
 
 export function loadMeta(): MetaState {
+  const base = defaultMeta();
   try {
     const raw = localStorage.getItem(META_STORAGE_KEY);
-    if (!raw) return defaultMeta();
+    if (!raw) return base;
     const parsed = JSON.parse(raw);
-    return { ...defaultMeta(), ...parsed, ultimatesUnlocked: { ...defaultMeta().ultimatesUnlocked, ...parsed.ultimatesUnlocked } };
+    return {
+      ...base,
+      ...parsed,
+      ultimatesUnlocked: { ...base.ultimatesUnlocked, ...parsed.ultimatesUnlocked },
+      classesUnlocked: { ...base.classesUnlocked, ...parsed.classesUnlocked },
+      skills: Array.isArray(parsed.skills) ? parsed.skills : [],
+    };
   } catch {
-    return defaultMeta();
+    return base;
   }
 }
 
@@ -46,26 +51,39 @@ export function saveMeta(meta: MetaState) {
   }
 }
 
+export interface AudioSettings {
+  muted: boolean;
+  volume: number; // 0..1
+}
+
+export function loadSettings(): AudioSettings {
+  try {
+    const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
+    if (!raw) return { muted: false, volume: 0.6 };
+    const parsed = JSON.parse(raw);
+    return { muted: !!parsed.muted, volume: typeof parsed.volume === 'number' ? parsed.volume : 0.6 };
+  } catch {
+    return { muted: false, volume: 0.6 };
+  }
+}
+
+export function saveSettings(s: AudioSettings) {
+  try {
+    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(s));
+  } catch {
+    // non-fatal
+  }
+}
+
 export function essenceForRun(roundsSurvived: number, kills: number, depth: number): number {
   return 25 + roundsSurvived * 20 + kills * 3 + depth * 8;
 }
 
-export function tokensForRun(roundsSurvived: number, kills: number): number {
-  return 8 + roundsSurvived * 4 + kills * 2;
+export function tokensForRun(roundsSurvived: number, kills: number, tokenMult: number): number {
+  return Math.round((8 + roundsSurvived * 4 + kills * 2) * tokenMult);
 }
 
 export const ULTIMATE_UNLOCK_COST = 400;
-export const MAX_HP_BOOST_COST = [150, 300, 500];
-export const START_POINTS_BOOST_COST = [150, 300, 500];
-export const DASH_COOLDOWN_BOOST_COST = [200, 400];
-
-export const MAX_HP_BOOST_AMOUNT = 12; // per tier
-export const START_POINTS_BOOST_AMOUNT = 150; // per tier
-export const DASH_COOLDOWN_BOOST_AMOUNT = 0.08; // fraction reduction per tier
-
-export function nextCost(costTable: number[], currentTier: number): number | null {
-  return currentTier < costTable.length ? costTable[currentTier] : null;
-}
 
 export const COMPANION_LEVEL_CAP = 5;
 

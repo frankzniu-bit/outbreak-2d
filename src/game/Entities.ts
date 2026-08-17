@@ -1,7 +1,8 @@
 import type { CharacterDef } from './Characters';
 import type { WeaponRoll, EnemyKind } from './types';
+import type { SkillEffects } from './SkillTree';
 import { WEAPON_DEFS } from './Weapons';
-import { PLAYER_RADIUS, DASH_SPEED, DASH_DURATION, DASH_IFRAME, ENEMY_RADIUS } from './constants';
+import { PLAYER_RADIUS, DASH_SPEED, DASH_DURATION, DASH_IFRAME, ENEMY_RADIUS, DOWN_BLEEDOUT } from './constants';
 
 export interface OwnedWeapon {
   roll: WeaponRoll;
@@ -10,14 +11,15 @@ export interface OwnedWeapon {
 }
 
 export class Player {
+  /** 0 = host / local, 1 = the joined co-op partner. */
+  index: number;
   x: number;
   y: number;
-  vx = 0;
-  vy = 0;
   hp: number;
   maxHp: number;
   aimAngle = 0;
   character: CharacterDef;
+  effects: SkillEffects;
 
   dashTime = 0;
   dashCooldownTimer = 0;
@@ -25,6 +27,7 @@ export class Player {
   dashDirX = 0;
   dashDirY = 0;
   iframeTimer = 0;
+  iframeDuration: number;
 
   weapons: OwnedWeapon[] = [];
   currentWeaponIndex = 0;
@@ -41,21 +44,32 @@ export class Player {
   ultimateCooldown = 0;
   ultimateActiveTimer = 0;
   visionBoostTimer = 0;
+  undyingTimer = 0;
 
   points = 0;
   alive = true;
+  downed = false;
+  downTimer = 0;
+  reviveProgress = 0;
+  reviveCharges: number;
   regenAccum = 0;
-  shieldFrac = 0; // 0..1 fraction of incoming damage blocked (medic ultimate)
+  shieldFrac = 0;
   shieldTimer = 0;
+  damageResist: number;
 
-  constructor(x: number, y: number, character: CharacterDef, dashCooldownMult: number, startingPoints: number, maxHpBonus = 0) {
+  constructor(index: number, x: number, y: number, character: CharacterDef, effects: SkillEffects) {
+    this.index = index;
     this.x = x;
     this.y = y;
     this.character = character;
-    this.maxHp = character.maxHp + maxHpBonus;
+    this.effects = effects;
+    this.maxHp = Math.round(character.maxHp + effects.maxHpBonus);
     this.hp = this.maxHp;
-    this.dashCooldownMax = character.dashCooldownBase * dashCooldownMult;
-    this.points = startingPoints;
+    this.dashCooldownMax = character.dashCooldownBase * effects.dashCdMult;
+    this.iframeDuration = DASH_IFRAME * effects.iframeMult;
+    this.reviveCharges = effects.reviveCharges;
+    this.damageResist = character.id === 'warden' ? 0.2 : 0;
+    this.points = effects.startPoints;
     const starter: OwnedWeapon = {
       roll: { weaponId: 'sidewinder', rarity: 'common', fireRateMult: 1, damageMult: 1, perkLabel: 'no perk roll' },
       ammoInMag: WEAPON_DEFS.sidewinder.magSize,
@@ -73,7 +87,12 @@ export class Player {
   }
 
   get isInvincible(): boolean {
-    return this.iframeTimer > 0;
+    return this.iframeTimer > 0 || this.undyingTimer > 0;
+  }
+
+  /** Can act: alive and not bleeding out on the floor. */
+  get active(): boolean {
+    return this.alive && !this.downed;
   }
 
   addWeapon(roll: WeaponRoll) {
@@ -87,24 +106,38 @@ export class Player {
     }
   }
 
-  takeDamage(amount: number): boolean {
-    if (this.isInvincible || !this.alive) return false;
-    const reduced = amount * (1 - this.shieldFrac);
+  /** Returns 'none' | 'hit' | 'downed'. Death is never instant - players bleed out first. */
+  takeDamage(amount: number): 'none' | 'hit' | 'downed' {
+    if (!this.active) return 'none';
+    if (this.undyingTimer > 0) return 'none';
+    if (this.iframeTimer > 0) return 'none';
+    const reduced = amount * (1 - this.shieldFrac) * (1 - this.damageResist);
     this.hp -= reduced;
     if (this.hp <= 0) {
       this.hp = 0;
-      this.alive = false;
+      this.downed = true;
+      this.downTimer = DOWN_BLEEDOUT;
+      this.reviveProgress = 0;
+      return 'downed';
     }
-    return true;
+    return 'hit';
+  }
+
+  reviveTo(fraction: number) {
+    this.downed = false;
+    this.downTimer = 0;
+    this.reviveProgress = 0;
+    this.hp = Math.max(1, Math.round(this.maxHp * fraction));
+    this.iframeTimer = Math.max(this.iframeTimer, 1.2);
   }
 }
 
 const ENEMY_KIND_COLOR: Record<EnemyKind, string> = {
   runner: '#d64545',
   fast: '#ffd23d',
-  tank: '#7a5236',
+  tank: '#a9743c',
   spitter: '#6bcf5f',
-  vampire: '#b13d8a',
+  vampire: '#c94ba0',
   explosive: '#ff9d2e',
   boss: '#c22f2f',
 };
@@ -133,16 +166,12 @@ export class Enemy {
   burnTimer = 0;
   burnDps = 0;
   burnTick = 0;
+  wobble = Math.random() * Math.PI * 2;
 
-  // spitter
   rangedCooldown = 1.2;
-  // vampire
   lifestealFrac = 0.35;
-  // explosive
   armed = false;
-  exploding = false;
   explodeTimer = 0;
-  // boss
   bossState: 'approach' | 'windup' | 'lunge' | 'cooldown' = 'approach';
   bossTimer = 1.5;
   lungeDirX = 0;
@@ -180,6 +209,17 @@ export interface EnemyProjectile {
   radius: number;
   alive: boolean;
   distanceLeft: number;
+}
+
+/** Warden's deployable sentry. */
+export interface Turret {
+  x: number;
+  y: number;
+  life: number;
+  fireCooldown: number;
+  damage: number;
+  range: number;
+  spin: number;
 }
 
 export { PLAYER_RADIUS, DASH_SPEED, DASH_DURATION, DASH_IFRAME };

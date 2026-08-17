@@ -16,6 +16,7 @@ export type ActionId =
   | 'ultimate'
   | 'interact'
   | 'pause'
+  | 'mute'
   | 'upgradesMenu';
 
 export const DEFAULT_BINDINGS: Record<ActionId, string> = {
@@ -34,6 +35,7 @@ export const DEFAULT_BINDINGS: Record<ActionId, string> = {
   ultimate: 'KeyX',
   interact: 'KeyF',
   pause: 'KeyP',
+  mute: 'KeyM',
   upgradesMenu: 'KeyU',
 };
 
@@ -51,8 +53,9 @@ export const ACTION_LABELS: Record<ActionId, string> = {
   weapon2: 'Select Weapon 2',
   ability: 'Character Ability',
   ultimate: 'Ultimate',
-  interact: 'Interact / Buy',
+  interact: 'Interact / Buy / Revive',
   pause: 'Pause',
+  mute: 'Mute Audio',
   upgradesMenu: 'Upgrades Menu',
 };
 
@@ -72,6 +75,7 @@ export const ACTION_ORDER: ActionId[] = [
   'ultimate',
   'interact',
   'pause',
+  'mute',
   'upgradesMenu',
 ];
 

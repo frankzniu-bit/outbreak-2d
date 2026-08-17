@@ -108,6 +108,14 @@ export class Level {
     }
   }
 
+  /** Co-op guests don't simulate the level - they mirror the host's copy. */
+  hydrate(rooms: RoomInfo[], doors: DoorInfo[], stations: Station[]) {
+    this.rooms = rooms;
+    this.doors = doors;
+    this.stations = stations;
+    this.rebuildWalls();
+  }
+
   private doorBarriers(): Wall[] {
     return this.doors
       .filter((d) => !d.open)
@@ -147,24 +155,56 @@ export class Level {
   }
 
   draw(ctx: CanvasRenderingContext2D) {
-    ctx.fillStyle = '#23262e';
-    for (const w of this.walls) ctx.fillRect(w.x, w.y, w.w, w.h);
+    // Chunky tiled walls with a lit top bevel, in the spirit of the reference art.
+    const TILE = 24;
+    for (const w of this.walls) {
+      ctx.fillStyle = '#242832';
+      ctx.fillRect(w.x, w.y, w.w, w.h);
+      ctx.fillStyle = 'rgba(255,255,255,0.07)';
+      ctx.fillRect(w.x, w.y, w.w, 3);
+      ctx.fillStyle = 'rgba(0,0,0,0.35)';
+      ctx.fillRect(w.x, w.y + w.h - 3, w.w, 3);
+      ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+      ctx.lineWidth = 1;
+      for (let tx = w.x + TILE; tx < w.x + w.w; tx += TILE) {
+        ctx.beginPath();
+        ctx.moveTo(tx, w.y);
+        ctx.lineTo(tx, w.y + w.h);
+        ctx.stroke();
+      }
+      for (let ty = w.y + TILE; ty < w.y + w.h; ty += TILE) {
+        ctx.beginPath();
+        ctx.moveTo(w.x, ty);
+        ctx.lineTo(w.x + w.w, ty);
+        ctx.stroke();
+      }
+    }
 
     for (const d of this.doors) {
+      const h = d.gapBottom - d.gapTop;
       if (!d.open) {
-        ctx.fillStyle = '#5a3d1a';
-        ctx.fillRect(d.x, d.gapTop, WALL_THICK, d.gapBottom - d.gapTop);
+        ctx.fillStyle = '#63451d';
+        ctx.fillRect(d.x, d.gapTop, WALL_THICK, h);
+        // plank slats
+        ctx.strokeStyle = 'rgba(0,0,0,0.4)';
+        ctx.lineWidth = 1.5;
+        for (let ty = d.gapTop + 12; ty < d.gapBottom; ty += 12) {
+          ctx.beginPath();
+          ctx.moveTo(d.x, ty);
+          ctx.lineTo(d.x + WALL_THICK, ty);
+          ctx.stroke();
+        }
         ctx.strokeStyle = '#ffb84d';
         ctx.lineWidth = 2;
-        ctx.strokeRect(d.x, d.gapTop, WALL_THICK, d.gapBottom - d.gapTop);
+        ctx.strokeRect(d.x, d.gapTop, WALL_THICK, h);
         ctx.fillStyle = '#ffd23d';
         ctx.font = 'bold 13px monospace';
         ctx.textAlign = 'center';
-        ctx.fillText(`[F] Open — ${d.cost}`, d.x + WALL_THICK / 2, d.gapTop - 10);
+        ctx.fillText(`[F] OPEN — ${d.cost}`, d.x + WALL_THICK / 2, d.gapTop - 10);
       } else {
-        ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+        ctx.strokeStyle = 'rgba(120,220,180,0.25)';
         ctx.lineWidth = 3;
-        ctx.strokeRect(d.x, d.gapTop, WALL_THICK, d.gapBottom - d.gapTop);
+        ctx.strokeRect(d.x, d.gapTop, WALL_THICK, h);
       }
     }
   }

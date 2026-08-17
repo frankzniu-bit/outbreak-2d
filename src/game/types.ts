@@ -23,7 +23,7 @@ export interface Vec2 {
   y: number;
 }
 
-export type CharacterId = 'recon' | 'brawler' | 'medic';
+export type CharacterId = 'recon' | 'brawler' | 'medic' | 'phantom' | 'warden' | 'revenant';
 
 export type WeaponId =
   | 'sidewinder'

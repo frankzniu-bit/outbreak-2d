@@ -1,8 +1,8 @@
-export const ROOM_W = 800;
-export const WORLD_H = 900;
+export const ROOM_W = 900;
+export const WORLD_H = 1000;
 
-export const VIEW_W = 960;
-export const VIEW_H = 600;
+export const VIEW_W = 1280;
+export const VIEW_H = 720;
 
 export const FIXED_DT = 1 / 60;
 
@@ -29,9 +29,16 @@ export const TREASURE_BASE_BONUS = 150;
 export const ROUND_INTERMISSION = 4;
 export const BOSS_ROUND_INTERVAL = 4;
 
-export const META_STORAGE_KEY = 'outbreak2d_meta_v1';
+export const META_STORAGE_KEY = 'outbreak2d_meta_v2';
 export const KEYBINDS_STORAGE_KEY = 'outbreak2d_keybinds_v1';
+export const SETTINGS_STORAGE_KEY = 'outbreak2d_settings_v1';
 
 // spotlight / lighting
-export const BASE_VISION_RADIUS = 190;
-export const AMBIENT_LIGHT = 0.16; // fraction of full brightness visible outside the spotlight
+export const BASE_VISION_RADIUS = 210;
+export const AMBIENT_LIGHT = 0.18; // fraction of full brightness visible outside the spotlight
+
+// downed / revive
+export const DOWN_BLEEDOUT = 18; // seconds before a downed player is lost
+export const REVIVE_HOLD_TIME = 2.2; // seconds a teammate must stand close
+export const REVIVE_RANGE = 78;
+export const REVIVE_HP_FRAC = 0.5;
