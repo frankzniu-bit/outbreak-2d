@@ -3,7 +3,7 @@ import { Camera } from './Camera';
 import { Particles, PointFlyers } from './Particles';
 import { Sfx } from './Audio';
 import { Level, resolveWallCollisions, circleRectCollide, sweepTo, type Station, type RoomInfo, type DoorInfo } from './Level';
-import { Player, Enemy, enemyColor, PLAYER_RADIUS, type EnemyProjectile, type Turret } from './Entities';
+import { Player, Enemy, enemyColor, PLAYER_RADIUS, type EnemyProjectile, type Turret, type PowerUp } from './Entities';
 import {
   Companion,
   drawCompanion,
@@ -14,7 +14,7 @@ import {
   type CompanionSave,
 } from './Companions';
 import { CHARACTER_DEFS, CHARACTER_ORDER, type CharacterDef } from './Characters';
-import { pickEnemyKind, createEnemy, createBoss } from './Enemies';
+import { pickEnemyKind, createEnemy, createBoss, BOSS_DEFS } from './Enemies';
 import {
   WEAPON_DEFS,
   rollWeapon,
@@ -42,15 +42,25 @@ import {
   companionSlots,
   nextSlotCost,
   activeCompanion,
+  secretRevealed,
   MAX_COMPANION_SLOTS,
   type MetaState,
   type AudioSettings,
 } from './Meta';
 import { SKILL_NODES, BRANCH_COLOR, BRANCH_LABEL, computeEffects, isUnlockable, type SkillEffects } from './SkillTree';
+// note: SKILL_NODES doubles as the "everything bought" checklist for the secret class
 import { DEFAULT_BINDINGS, ACTION_ORDER, ACTION_LABELS, loadBindings, saveBindings, formatKeyCode, type ActionId } from './Keybinds';
 import { NetLink } from './Net';
 import { CoopUI } from './CoopUI';
-import { RARITY_ORDER, type EnemyKind, type CharacterId, type Rarity, type FieldUpgrade } from './types';
+import {
+  RARITY_ORDER,
+  SECRET_CHARACTER,
+  type EnemyKind,
+  type CharacterId,
+  type Rarity,
+  type FieldUpgrade,
+  type PowerUpKind,
+} from './types';
 import {
   WORLD_H,
   VIEW_W,
@@ -68,6 +78,12 @@ import {
   TREASURE_BASE_BONUS,
   UPGRADE_BASE_COST,
   UPGRADE_COST_STEP,
+  AMMO_BASE_COST,
+  AMMO_COST_STEP,
+  POWERUP_DROP_CHANCE,
+  POWERUP_LIFETIME,
+  POWERUP_PICKUP_RADIUS,
+  POWERUP_DURATION,
   BOSS_LUNGE_SPEED,
   BOSS_LUNGE_MAX,
   BOSS_MIN_APPROACH,
@@ -119,6 +135,20 @@ interface PlayerInput {
  *  when several input packets land between two host ticks. */
 const EDGE_KEYS = ['fire', 'dash', 'ability', 'ultimate', 'interact', 'melee', 'reload', 'swap', 'w1', 'w2'] as const;
 type EdgeKey = (typeof EDGE_KEYS)[number];
+
+const POWERUP_COLORS: Record<PowerUpKind, string> = {
+  instakill: '#ff5b4a',
+  doublepoints: '#ffd23d',
+  nuke: '#8dffb0',
+  maxammo: '#8dd6ff',
+};
+
+const POWERUP_LABELS: Record<PowerUpKind, string> = {
+  instakill: 'INSTA-KILL',
+  doublepoints: '2X POINTS',
+  nuke: 'NUKE',
+  maxammo: 'MAX AMMO',
+};
 
 const UPGRADE_LABELS: Record<FieldUpgrade, string> = {
   vitality: 'VITALITY',
@@ -187,6 +217,12 @@ export class Game {
   private flickerPhase = 0;
   private runBonusEssence = 0;
   private upgradesBought = 0;
+  private ammoBought = 0;
+  private bossesDefeated = 0;
+  private powerUps: PowerUp[] = [];
+  private instaKillTimer = 0;
+  private doublePointsTimer = 0;
+  private nukeFlash = 0;
   private lastEssenceEarned = 0;
   private lastTokensEarned = 0;
   private stats: RunStats = { kills: 0, roundsSurvived: 0, points: 0 };
@@ -302,11 +338,14 @@ export class Game {
       e: this.enemies.map((e) => ({
         x: Math.round(e.x), y: Math.round(e.y), r: e.radius, k: e.kind,
         hp: Math.round(e.hp), mhp: Math.round(e.maxHp), f: e.hitFlash > 0 ? 1 : 0,
-        am: e.armed ? 1 : 0, bs: e.bossState, sl: e.slowFactor < 1 ? 1 : 0, wb: +e.wobble.toFixed(2),
+        am: e.armed ? 1 : 0, bs: e.bossState, bt: e.bossType, en: e.enraged ? 1 : 0,
+        sl: e.slowFactor < 1 ? 1 : 0, wb: +e.wobble.toFixed(2),
       })),
       pr: this.projectiles.map((p) => ({ x: Math.round(p.x), y: Math.round(p.y), r: p.radius, c: p.color })),
       ep: this.enemyProjectiles.map((p) => ({ x: Math.round(p.x), y: Math.round(p.y), r: p.radius })),
       tu: this.turrets.map((t) => ({ x: Math.round(t.x), y: Math.round(t.y), s: +t.spin.toFixed(2) })),
+      pu: this.powerUps.map((u) => ({ k: u.kind, x: Math.round(u.x), y: Math.round(u.y), l: +u.life.toFixed(1), ph: +u.phase.toFixed(2) })),
+      fx: { ik: +this.instaKillTimer.toFixed(1), dp: +this.doublePointsTimer.toFixed(1) },
       cm: this.companion
         ? { x: Math.round(this.companion.x), y: Math.round(this.companion.y), f: +this.companion.facing.toFixed(2),
             ph: +this.companion.animPhase.toFixed(2), sv: this.companion.save }
@@ -384,6 +423,8 @@ export class Game {
       e.hitFlash = d.f ? 0.1 : 0;
       e.armed = !!d.am;
       e.bossState = d.bs as Enemy['bossState'];
+      e.bossType = (d.bt as Enemy['bossType']) ?? 'brute';
+      e.enraged = !!d.en;
       e.slowFactor = d.sl ? 0.5 : 1;
       e.wobble = d.wb as number;
       return e;
@@ -395,6 +436,12 @@ export class Game {
     this.enemyProjectiles = (msg.ep as Record<string, unknown>[]).map((d) => ({
       x: d.x as number, y: d.y as number, vx: 0, vy: 0, damage: 0, radius: d.r as number, alive: true, distanceLeft: 1,
     }));
+    this.powerUps = ((msg.pu as Record<string, unknown>[]) ?? []).map((d) => ({
+      kind: d.k as PowerUpKind, x: d.x as number, y: d.y as number, life: d.l as number, phase: d.ph as number,
+    }));
+    const fx = (msg.fx ?? {}) as Record<string, number>;
+    this.instaKillTimer = fx.ik ?? 0;
+    this.doublePointsTimer = fx.dp ?? 0;
     this.turrets = (msg.tu as Record<string, unknown>[]).map((d) => ({
       x: d.x as number, y: d.y as number, life: 1, fireCooldown: 0, damage: 0, range: 0, spin: d.s as number,
     }));
@@ -609,11 +656,12 @@ export class Game {
   // ---------------- select ----------------
 
   private updateSelect() {
-    for (let i = 0; i < 6; i++) {
+    const visibleCount = this.visibleCharacters().length;
+    for (let i = 0; i < visibleCount; i++) {
       if (this.input.wasPressed(`Digit${i + 1}`)) this.selectedCharacterIndex = i;
     }
-    if (this.input.wasPressed('ArrowLeft')) this.selectedCharacterIndex = (this.selectedCharacterIndex + 5) % 6;
-    if (this.input.wasPressed('ArrowRight')) this.selectedCharacterIndex = (this.selectedCharacterIndex + 1) % 6;
+    if (this.input.wasPressed('ArrowLeft')) this.selectedCharacterIndex = (this.selectedCharacterIndex + visibleCount - 1) % visibleCount;
+    if (this.input.wasPressed('ArrowRight')) this.selectedCharacterIndex = (this.selectedCharacterIndex + 1) % visibleCount;
     if (this.actionPressed('upgradesMenu')) this.scene = 'hub';
     if (this.input.wasPressed('KeyC')) this.scene = 'controls';
     if (this.input.wasPressed('KeyB')) this.scene = 'companions';
@@ -633,7 +681,8 @@ export class Game {
   }
 
   private pickCharacter(idx: number) {
-    const id = CHARACTER_ORDER[idx];
+    const id = this.visibleCharacters()[idx];
+    if (!id) return;
     const def = CHARACTER_DEFS[id];
     if (this.meta.classesUnlocked[id]) {
       this.selectedCharacterIndex = idx;
@@ -652,7 +701,7 @@ export class Game {
   }
 
   private pressDropIn() {
-    const id = CHARACTER_ORDER[this.selectedCharacterIndex];
+    const id = this.visibleCharacters()[this.selectedCharacterIndex] ?? CHARACTER_ORDER[0];
     if (!this.meta.classesUnlocked[id]) {
       this.notice(`${CHARACTER_DEFS[id].name} is still locked.`);
       return;
@@ -666,16 +715,23 @@ export class Game {
     this.beginNewRun(CHARACTER_DEFS[id]);
   }
 
+  /** Characters currently visible on the select screen (the secret one hides). */
+  private visibleCharacters(): CharacterId[] {
+    const revealed = this.meta.classesUnlocked[SECRET_CHARACTER] || secretRevealed(this.meta, SKILL_NODES.map((n) => n.id));
+    return CHARACTER_ORDER.filter((id) => id !== SECRET_CHARACTER || revealed);
+  }
+
   private cardLayout() {
-    const cardW = 190;
-    const gap = 18;
-    const totalW = cardW * 6 + gap * 5;
-    return { cardW, cardH: 296, gap, startX: VIEW_W / 2 - totalW / 2, y: 148 };
+    const count = this.visibleCharacters().length;
+    const cardW = count > 6 ? 166 : 190;
+    const gap = count > 6 ? 14 : 18;
+    const totalW = cardW * count + gap * (count - 1);
+    return { cardW, cardH: 296, gap, startX: VIEW_W / 2 - totalW / 2, y: 148, count };
   }
 
   private hitTestCharacterCard(mx: number, my: number): number {
-    const { cardW, cardH, gap, startX, y } = this.cardLayout();
-    for (let i = 0; i < 6; i++) {
+    const { cardW, cardH, gap, startX, y, count } = this.cardLayout();
+    for (let i = 0; i < count; i++) {
       const x = startX + i * (cardW + gap);
       if (mx >= x && mx <= x + cardW && my >= y && my <= y + cardH) return i;
     }
@@ -741,6 +797,12 @@ export class Game {
     this.paused = false;
     this.runBonusEssence = 0;
     this.upgradesBought = 0;
+    this.ammoBought = 0;
+    this.bossesDefeated = 0;
+    this.powerUps = [];
+    this.instaKillTimer = 0;
+    this.doublePointsTimer = 0;
+    this.nukeFlash = 0;
     // start each run from a clean input-edge baseline on both ends of the link
     this.localEdges = zeroEdges();
     this.remoteEdgePending = zeroEdges();
@@ -814,7 +876,7 @@ export class Game {
     const h = 44;
     let y = 168;
 
-    const selId = CHARACTER_ORDER[this.selectedCharacterIndex];
+    const selId = this.visibleCharacters()[this.selectedCharacterIndex] ?? CHARACTER_ORDER[0];
     const selDef = CHARACTER_DEFS[selId];
     const ultOwned = this.meta.ultimatesUnlocked[selId];
     rows.push({
@@ -1061,6 +1123,7 @@ export class Game {
     this.updateRevives(dt);
     this.updateStations();
     this.updateTurrets(dt);
+    this.updatePowerUps(dt);
 
     const anchor = this.players[this.localIndex] ?? this.players[0];
     if (this.companion) {
@@ -1108,8 +1171,26 @@ export class Game {
 
   /** Bleedout, teammate revives, and Second Wind self-revives. */
   private updateRevives(dt: number) {
+    const solo = this.players.length < 2;
     for (const p of this.players) {
       if (!p.alive || !p.downed) continue;
+
+      // Solo runs never show a bleedout screen - there's nobody who could come
+      // pick you up, so Second Wind fires immediately or the run just ends.
+      if (solo) {
+        if (p.reviveCharges > 0) {
+          p.reviveCharges--;
+          p.reviveTo(0.65);
+          this.sfx.revive();
+          this.particles.burst(p.x, p.y, '#ffd23d', 30, 240);
+          this.particles.floatText(p.x, p.y - 40, 'SECOND WIND', '#ffd23d');
+        } else {
+          p.alive = false;
+          p.downed = false;
+        }
+        continue;
+      }
+
       p.downTimer -= dt;
 
       let beingRevived = false;
@@ -1212,7 +1293,7 @@ export class Game {
       for (const s of this.enemiesToSpawn) s.delay -= dt;
       while (this.enemiesToSpawn.length && this.enemiesToSpawn[0].delay <= 0) {
         const s = this.enemiesToSpawn.shift()!;
-        if (s.kind === 'boss') this.enemies.push(createBoss(s.x, s.y, this.round));
+        if (s.kind === 'boss') this.enemies.push(createBoss(s.x, s.y, this.round, this.bossesDefeated));
         else this.enemies.push(createEnemy(s.x, s.y, s.kind as Exclude<EnemyKind, 'boss'>, this.round));
       }
       return;
@@ -1296,7 +1377,7 @@ export class Game {
       const crawl = 62;
       const nx = p.x + inp.mx * crawl * dt;
       const ny = p.y + inp.my * crawl * dt;
-      const res = resolveWallCollisions(nx, ny, PLAYER_RADIUS, this.level.allWalls());
+      const res = resolveWallCollisions(nx, ny, PLAYER_RADIUS, this.level.wallsNear(p.x));
       p.x = res.x;
       p.y = res.y;
       return;
@@ -1328,7 +1409,7 @@ export class Game {
       vy = inp.my * moveSpeed;
     }
 
-    const res = resolveWallCollisions(p.x + vx * dt, p.y + vy * dt, PLAYER_RADIUS, this.level.allWalls());
+    const res = resolveWallCollisions(p.x + vx * dt, p.y + vy * dt, PLAYER_RADIUS, this.level.wallsNear(p.x));
     p.x = res.x;
     p.y = res.y;
 
@@ -1364,6 +1445,7 @@ export class Game {
   private damageMultFor(p: Player, target: Enemy): number {
     let mult = p.effects.damageMult;
     if (p.effects.executionerBonus > 0 && target.hp / target.maxHp < 0.3) mult += p.effects.executionerBonus;
+    if (p.character.id === 'harbinger') mult += p.killStacks * 0.02;
     return mult;
   }
 
@@ -1479,10 +1561,17 @@ export class Game {
       let diff = Math.abs(Math.atan2(dy, dx) - p.aimAngle);
       if (diff > Math.PI) diff = Math.PI * 2 - diff;
       if (diff > MELEE_ARC / 2) continue;
-      const dmg = MELEE_DAMAGE * p.character.meleeDamageMult * (rampage ? 2.2 : 1) * this.damageMultFor(p, e);
+      const dmg = this.instaKillTimer > 0
+        ? e.maxHp * 999
+        : MELEE_DAMAGE * p.character.meleeDamageMult * (rampage ? 2.2 : 1) * this.damageMultFor(p, e);
       const killed = e.takeDamage(dmg);
-      this.applyLifesteal(p, dmg);
-      this.particles.floatText(e.x, e.y - 10, `-${Math.round(dmg)}`, '#ffffff');
+      this.applyLifesteal(p, Math.min(dmg, e.maxHp));
+      this.particles.floatText(
+        e.x,
+        e.y - 10,
+        this.instaKillTimer > 0 ? 'KILL' : `-${Math.round(dmg)}`,
+        this.instaKillTimer > 0 ? '#ff5b4a' : '#ffffff',
+      );
       if (killed) {
         this.onEnemyKilled(e, p);
         if (p.character.id === 'brawler') p.hp = Math.min(p.maxHp, p.hp + (rampage ? 16 : 8));
@@ -1547,7 +1636,7 @@ export class Game {
         const tx = p.x + Math.cos(p.aimAngle) * dist;
         const ty = p.y + Math.sin(p.aimAngle) * dist;
         this.particles.burst(p.x, p.y, '#b06bff', 18, 200);
-        const res = sweepTo(p.x, p.y, tx, ty, PLAYER_RADIUS, this.level.allWalls());
+        const res = sweepTo(p.x, p.y, tx, ty, PLAYER_RADIUS, this.level.wallsNear(p.x));
         p.x = res.x;
         p.y = res.y;
         p.iframeTimer = Math.max(p.iframeTimer, 0.25);
@@ -1563,6 +1652,24 @@ export class Game {
         });
         this.particles.burst(p.x, p.y, '#ffb038', 16, 160);
         this.pushEvent(p.x, p.y, '#ffb038', 16);
+        break;
+      }
+      case 'harbinger': {
+        // pull everything nearby inward, then shred it
+        for (const e of this.enemies) {
+          if (!e.alive) continue;
+          const dx = p.x - e.x;
+          const dy = p.y - e.y;
+          const dist = Math.hypot(dx, dy);
+          if (dist > 260) continue;
+          e.knockX += (dx / (dist || 1)) * 420;
+          e.knockY += (dy / (dist || 1)) * 420;
+          const killed = e.takeDamage(46 * this.damageMultFor(p, e));
+          this.particles.burst(e.x, e.y, '#c9b3ff', 6, 120);
+          if (killed) this.onEnemyKilled(e, p);
+        }
+        this.particles.burst(p.x, p.y, '#c9b3ff', 26, 240);
+        this.pushEvent(p.x, p.y, '#c9b3ff', 26);
         break;
       }
       case 'revenant': {
@@ -1634,6 +1741,22 @@ export class Game {
         }
         this.particles.burst(p.x, p.y, '#ffd98a', 34, 260);
         this.pushEvent(p.x, p.y, '#ffd98a', 34);
+        break;
+      }
+      case 'harbinger': {
+        for (const e of this.enemies) {
+          if (!e.alive) continue;
+          if (Math.hypot(e.x - p.x, e.y - p.y) > 420) continue;
+          const killed = e.takeDamage(420 * this.damageMultFor(p, e));
+          this.particles.burst(e.x, e.y, '#efe3ff', 10, 200);
+          if (killed) this.onEnemyKilled(e, p);
+        }
+        p.shieldFrac = 0.4;
+        p.shieldTimer = 6;
+        this.particles.burst(p.x, p.y, '#efe3ff', 50, 340);
+        this.pushEvent(p.x, p.y, '#efe3ff', 50);
+        this.camera.shake(12, 0.4);
+        this.sfx.explosion();
         break;
       }
       case 'revenant':
@@ -1720,6 +1843,23 @@ export class Game {
       this.particles.floatText(station.x, station.y - 40, `${WEAPON_DEFS[roll.weaponId].name.toUpperCase()} (${roll.rarity.toUpperCase()})`, color);
       this.camera.shake(5, 0.25);
       this.sfx.rarityFanfare(roll.rarity);
+    } else if (station.kind === 'ammo') {
+      const cost = AMMO_BASE_COST + this.ammoBought * AMMO_COST_STEP;
+      if (p.points < cost) return;
+      const needsAmmo = p.weapons.some((w) => w.ammoReserve < WEAPON_DEFS[w.roll.weaponId].reserveMax);
+      if (!needsAmmo) return;
+      this.spendPoints(cost);
+      this.ammoBought++;
+      for (const w of p.weapons) {
+        const def = WEAPON_DEFS[w.roll.weaponId];
+        w.ammoInMag = def.magSize;
+        w.ammoReserve = def.reserveMax;
+      }
+      p.reloading = false;
+      this.particles.burst(station.x, station.y, '#8dd6ff', 26, 220);
+      this.pushEvent(station.x, station.y, '#8dd6ff', 26);
+      this.particles.floatText(station.x, station.y - 40, 'AMMO RESUPPLIED', '#8dd6ff');
+      this.sfx.reload();
     } else if (station.kind === 'upgrade') {
       const cost = UPGRADE_BASE_COST + this.upgradesBought * UPGRADE_COST_STEP;
       if (p.points < cost) return;
@@ -1745,6 +1885,77 @@ export class Game {
       this.camera.shake(4, 0.2);
       this.sfx.rarityFanfare(p.currentWeapon.roll.rarity);
     }
+  }
+
+  // ---------------- power-ups ----------------
+
+  private maybeDropPowerUp(x: number, y: number, guaranteed: boolean) {
+    if (!guaranteed && Math.random() > POWERUP_DROP_CHANCE) return;
+    const pool: PowerUpKind[] = ['instakill', 'doublepoints', 'nuke', 'maxammo'];
+    const kind = pool[Math.floor(Math.random() * pool.length)];
+    this.powerUps.push({ kind, x, y, life: POWERUP_LIFETIME, phase: 0 });
+  }
+
+  private updatePowerUps(dt: number) {
+    if (this.instaKillTimer > 0) this.instaKillTimer -= dt;
+    if (this.doublePointsTimer > 0) this.doublePointsTimer -= dt;
+    if (this.nukeFlash > 0) this.nukeFlash -= dt;
+
+    for (const pu of this.powerUps) {
+      pu.life -= dt;
+      pu.phase += dt;
+      for (const p of this.players) {
+        if (!p.active) continue;
+        if (Math.hypot(p.x - pu.x, p.y - pu.y) < POWERUP_PICKUP_RADIUS) {
+          this.collectPowerUp(pu, p);
+          pu.life = 0;
+          break;
+        }
+      }
+    }
+    this.powerUps = this.powerUps.filter((pu) => pu.life > 0);
+  }
+
+  private collectPowerUp(pu: PowerUp, p: Player) {
+    this.sfx.rarityFanfare('epic');
+    this.camera.shake(4, 0.2);
+    switch (pu.kind) {
+      case 'instakill':
+        this.instaKillTimer = POWERUP_DURATION;
+        this.particles.floatText(p.x, p.y - 40, 'INSTA-KILL!', '#ff5b4a');
+        break;
+      case 'doublepoints':
+        this.doublePointsTimer = POWERUP_DURATION;
+        this.particles.floatText(p.x, p.y - 40, 'DOUBLE POINTS!', '#ffd23d');
+        break;
+      case 'maxammo':
+        for (const ally of this.players) {
+          for (const w of ally.weapons) {
+            const def = WEAPON_DEFS[w.roll.weaponId];
+            w.ammoInMag = def.magSize;
+            w.ammoReserve = def.reserveMax;
+          }
+          ally.reloading = false;
+        }
+        this.particles.floatText(p.x, p.y - 40, 'MAX AMMO!', '#8dd6ff');
+        break;
+      case 'nuke': {
+        const killed = this.enemies.filter((e) => e.alive);
+        for (const e of killed) {
+          this.particles.burst(e.x, e.y, '#8dffb0', 10, 180);
+          e.alive = false;
+        }
+        this.stats.kills += killed.length;
+        this.addPoints(400);
+        this.nukeFlash = 0.55;
+        this.camera.shake(12, 0.5);
+        this.sfx.explosion();
+        this.particles.floatText(p.x, p.y - 40, 'NUKE!', '#8dffb0');
+        break;
+      }
+    }
+    this.particles.burst(pu.x, pu.y, POWERUP_COLORS[pu.kind], 26, 220);
+    this.pushEvent(pu.x, pu.y, POWERUP_COLORS[pu.kind], 26);
   }
 
   /** Run-only buff from a field upgrade station. Returns a label for the popup. */
@@ -1795,7 +2006,7 @@ export class Game {
     e.knockY *= 1 - 8 * dt;
     vx += e.knockX;
     vy += e.knockY;
-    const res = resolveWallCollisions(e.x + vx * dt, e.y + vy * dt, e.radius, this.level.allWalls());
+    const res = resolveWallCollisions(e.x + vx * dt, e.y + vy * dt, e.radius, this.level.wallsNear(e.x));
     e.x = res.x;
     e.y = res.y;
   }
@@ -1903,7 +2114,7 @@ export class Game {
     e.knockY *= 1 - 8 * dt;
     vx += e.knockX;
     vy += e.knockY;
-    const res = resolveWallCollisions(e.x + vx * dt, e.y + vy * dt, e.radius, this.level.allWalls());
+    const res = resolveWallCollisions(e.x + vx * dt, e.y + vy * dt, e.radius, this.level.wallsNear(e.x));
     e.x = res.x;
     e.y = res.y;
 
@@ -1921,6 +2132,24 @@ export class Game {
   }
 
   private updateBoss(e: Enemy, target: Player, dt: number) {
+    // Every archetype keeps the charge cycle as its baseline melee threat, and
+    // layers its own signature attack on a separate timer.
+    e.bossAbilityTimer -= dt;
+    if (!e.enraged && e.hp / e.maxHp < 0.35) {
+      e.enraged = true;
+      e.speed *= 1.35;
+      this.sfx.bossRoar();
+      this.particles.burst(e.x, e.y, '#ff5b4a', 30, 260);
+      this.pushEvent(e.x, e.y, '#ff5b4a', 30);
+    }
+    if (e.bossAbilityTimer <= 0) this.bossSignature(e, target);
+
+    if (e.bossType === 'titan') {
+      // the titan is a turret: it shells you rather than charging
+      this.seekTarget(e, target, dt * 0.55);
+      return;
+    }
+
     switch (e.bossState) {
       case 'approach': {
         this.seekTarget(e, target, dt);
@@ -1954,7 +2183,7 @@ export class Game {
         e.bossTimer -= dt;
         const step = Math.min(BOSS_LUNGE_SPEED * dt, e.lungeRemaining);
         e.lungeRemaining -= step;
-        const res = sweepTo(e.x, e.y, e.x + e.lungeDirX * step, e.y + e.lungeDirY * step, e.radius, this.level.allWalls());
+        const res = sweepTo(e.x, e.y, e.x + e.lungeDirX * step, e.y + e.lungeDirY * step, e.radius, this.level.wallsNear(e.x));
         const blocked = Math.hypot(res.x - e.x, res.y - e.y) < step - 0.5;
         e.x = res.x;
         e.y = res.y;
@@ -1990,6 +2219,75 @@ export class Game {
         }
         break;
       }
+    }
+  }
+
+  /** The attack that makes each boss archetype feel distinct. */
+  private bossSignature(e: Enemy, target: Player) {
+    const enrageRate = e.enraged ? 0.6 : 1;
+    switch (e.bossType) {
+      case 'brute':
+        // shockwave of debris around itself
+        e.bossAbilityTimer = 5 * enrageRate;
+        for (let i = 0; i < 8; i++) {
+          const a = (i / 8) * Math.PI * 2;
+          this.enemyProjectiles.push({
+            x: e.x, y: e.y,
+            vx: Math.cos(a) * 260, vy: Math.sin(a) * 260,
+            damage: e.damage * 0.35, radius: 6, alive: true, distanceLeft: 340,
+          });
+        }
+        this.particles.burst(e.x, e.y, '#c22f2f', 18, 200);
+        break;
+      case 'titan': {
+        // arcing bile volley aimed at the player
+        e.bossAbilityTimer = 2.2 * enrageRate;
+        const base = Math.atan2(target.y - e.y, target.x - e.x);
+        for (let i = -2; i <= 2; i++) {
+          const a = base + i * 0.16;
+          this.enemyProjectiles.push({
+            x: e.x, y: e.y,
+            vx: Math.cos(a) * 340, vy: Math.sin(a) * 340,
+            damage: e.damage * 0.5, radius: 7, alive: true, distanceLeft: 720,
+          });
+        }
+        this.particles.burst(e.x, e.y, '#6bcf5f', 14, 180);
+        this.sfx.bossRoar();
+        break;
+      }
+      case 'hive': {
+        // blink toward the player and spit out a brood
+        e.bossAbilityTimer = 6 * enrageRate;
+        const spawnCount = 3 + Math.floor(this.round / 4);
+        for (let i = 0; i < spawnCount; i++) {
+          const a = Math.random() * Math.PI * 2;
+          const minion = createEnemy(e.x + Math.cos(a) * 60, e.y + Math.sin(a) * 60, 'fast', this.round);
+          this.enemies.push(minion);
+        }
+        const dx = target.x - e.x;
+        const dy = target.y - e.y;
+        const d = Math.hypot(dx, dy) || 1;
+        const dest = sweepTo(e.x, e.y, e.x + (dx / d) * 220, e.y + (dy / d) * 220, e.radius, this.level.wallsNear(e.x));
+        e.x = dest.x;
+        e.y = dest.y;
+        this.particles.burst(e.x, e.y, '#c94ba0', 24, 220);
+        this.pushEvent(e.x, e.y, '#c94ba0', 24);
+        break;
+      }
+      case 'screamer':
+        // disorienting scream: heavy slow pulse plus a speed burst
+        e.bossAbilityTimer = 7 * enrageRate;
+        for (const p of this.players) {
+          if (!p.active) continue;
+          if (Math.hypot(p.x - e.x, p.y - e.y) < 380) {
+            p.takeDamage(e.damage * 0.3);
+            this.camera.shake(7, 0.4);
+          }
+        }
+        this.particles.burst(e.x, e.y, '#ffd23d', 30, 300);
+        this.pushEvent(e.x, e.y, '#ffd23d', 30);
+        this.sfx.bossRoar();
+        break;
     }
   }
 
@@ -2041,7 +2339,7 @@ export class Game {
         proj.alive = false;
         continue;
       }
-      for (const w of this.level.allWalls()) {
+      for (const w of this.level.wallsNear(proj.x)) {
         if (circleRectCollide(proj.x, proj.y, proj.radius, w)) {
           proj.alive = false;
           break;
@@ -2077,7 +2375,7 @@ export class Game {
         proj.alive = false;
         continue;
       }
-      for (const w of this.level.allWalls()) {
+      for (const w of this.level.wallsNear(proj.x)) {
         if (circleRectCollide(proj.x, proj.y, proj.radius, w)) {
           proj.alive = false;
           break;
@@ -2092,10 +2390,17 @@ export class Game {
         if (!e.alive) continue;
         if (Math.hypot(proj.x - e.x, proj.y - e.y) >= proj.radius + e.radius) continue;
 
-        const dmg = proj.damage * (owner ? this.damageMultFor(owner, e) / owner.effects.damageMult : 1);
+        const dmg = this.instaKillTimer > 0
+          ? e.maxHp * 999
+          : proj.damage * (owner ? this.damageMultFor(owner, e) / owner.effects.damageMult : 1);
         const killed = e.takeDamage(dmg);
-        if (owner) this.applyLifesteal(owner, dmg);
-        this.particles.floatText(e.x, e.y - 12, `-${Math.round(dmg)}`, '#ffffff');
+        if (owner) this.applyLifesteal(owner, Math.min(dmg, e.maxHp));
+        this.particles.floatText(
+          e.x,
+          e.y - 12,
+          this.instaKillTimer > 0 ? 'KILL' : `-${Math.round(dmg)}`,
+          this.instaKillTimer > 0 ? '#ff5b4a' : '#ffffff',
+        );
         this.particles.burst(proj.x, proj.y, proj.color, 5, 100);
         const kdx = e.x - proj.x;
         const kdy = e.y - proj.y;
@@ -2161,17 +2466,20 @@ export class Game {
     this.camera.shake(2.5, 0.08);
     this.hitStopTimer = Math.max(this.hitStopTimer, 0.035);
     this.sfx.kill();
-    const mult = killer ? killer.effects.pointGainMult : 1;
+    const mult = (killer ? killer.effects.pointGainMult : 1) * (this.doublePointsTimer > 0 ? 2 : 1);
     this.pointFlyers.spawn(e.x, e.y, Math.round((60 + this.round * 5) * mult));
     this.sfx.points();
     this.stats.kills++;
     this.killStreak++;
     this.killStreakTimer = 3;
-    if (e.kind === 'boss') this.onBossKilled();
+    if (killer && killer.character.id === 'harbinger') killer.killStacks = Math.min(30, killer.killStacks + 1);
+    if (e.kind === 'boss') this.onBossKilled(e);
+    else this.maybeDropPowerUp(e.x, e.y, false);
   }
 
-  private onBossKilled() {
-    this.addPoints(400 + this.round * 20);
+  private onBossKilled(e: Enemy) {
+    this.bossesDefeated++;
+    this.addPoints((400 + this.round * 20) * (this.doublePointsTimer > 0 ? 2 : 1));
     this.runBonusEssence += 60;
     let roll = rollWeapon(MYSTERY_BOX_POOL);
     while (RARITY_ORDER.indexOf(roll.rarity) < 2) roll = upgradeWeaponRoll(roll);
@@ -2179,6 +2487,8 @@ export class Game {
     p.addWeapon(roll);
     this.particles.floatText(p.x, p.y - 40, `BOSS DOWN — ${WEAPON_DEFS[roll.weaponId].name.toUpperCase()}`, rarityColor(roll.rarity));
     this.sfx.rarityFanfare('legendary');
+    // bosses always leave something behind
+    this.maybeDropPowerUp(e.x, e.y, true);
   }
 
   // ---------------- render ----------------
@@ -2202,6 +2512,7 @@ export class Game {
     this.renderFloor();
     this.level.draw(ctx);
     this.renderStations();
+    this.renderPowerUps();
     this.renderAirstrikeMarker();
     this.renderEnemyProjectiles();
     this.renderProjectiles();
@@ -2218,6 +2529,12 @@ export class Game {
     ctx.restore();
 
     this.renderLighting();
+
+    if (this.nukeFlash > 0) {
+      ctx.fillStyle = `rgba(200,255,220,${Math.min(0.75, this.nukeFlash)})`;
+      ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+    }
+
     drawHud(ctx, this.players[this.localIndex] ?? this.players[0], this.level, this.getHudState());
 
     if (this.paused) {
@@ -2245,7 +2562,13 @@ export class Game {
       intermissionTimer: this.intermissionTimer,
       tutorialTimer: this.tutorialTimer,
       controlsHint: hint,
-      boss: boss ? { hp: boss.hp, maxHp: boss.maxHp } : null,
+      boss: boss
+        ? { hp: boss.hp, maxHp: boss.maxHp, name: BOSS_DEFS[boss.bossType].name + (boss.enraged ? ' — ENRAGED' : ''), color: BOSS_DEFS[boss.bossType].color }
+        : null,
+      powerUps: [
+        ...(this.instaKillTimer > 0 ? [{ label: POWERUP_LABELS.instakill, color: POWERUP_COLORS.instakill, secondsLeft: this.instaKillTimer }] : []),
+        ...(this.doublePointsTimer > 0 ? [{ label: POWERUP_LABELS.doublepoints, color: POWERUP_COLORS.doublepoints, secondsLeft: this.doublePointsTimer }] : []),
+      ],
       companion: this.companion ? { name: this.companion.name, rarity: this.companion.rarity } : null,
       partner: partnerPlayer
         ? {
@@ -2378,6 +2701,24 @@ export class Game {
         ctx.font = 'bold 12px monospace';
         ctx.textAlign = 'center';
         ctx.fillText(`[F] ${UPGRADE_LABELS[s.perk ?? 'power']} — ${cost}`, s.x, s.y - 36);
+      } else if (s.kind === 'ammo') {
+        ctx.save();
+        ctx.shadowColor = '#8dd6ff';
+        ctx.shadowBlur = 16;
+        ctx.fillStyle = '#1d3348';
+        ctx.fillRect(s.x - 26, s.y - 16, 52, 32);
+        ctx.strokeStyle = '#8dd6ff';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(s.x - 26, s.y - 16, 52, 32);
+        // shell rows
+        ctx.fillStyle = '#8dd6ff';
+        for (let i = 0; i < 4; i++) ctx.fillRect(s.x - 18 + i * 10, s.y - 8, 5, 16);
+        ctx.restore();
+        const cost = AMMO_BASE_COST + this.ammoBought * AMMO_COST_STEP;
+        ctx.fillStyle = '#bfe4ff';
+        ctx.font = 'bold 12px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(`[F] AMMO CRATE — ${cost}`, s.x, s.y - 26);
       } else if (s.kind === 'treasure') {
         const pulse = (Math.sin(this.flickerPhase * 6) + 1) / 2;
         ctx.save();
@@ -2402,6 +2743,45 @@ export class Game {
         ctx.textAlign = 'center';
         ctx.fillText('walk over to collect', s.x, s.y - 28);
       }
+    }
+  }
+
+  private renderPowerUps() {
+    const ctx = this.ctx;
+    for (const pu of this.powerUps) {
+      const color = POWERUP_COLORS[pu.kind];
+      const bob = Math.sin(pu.phase * 3.6) * 4;
+      const spin = pu.phase * 2;
+      // blink out over the last three seconds
+      const alpha = pu.life < 3 ? 0.35 + 0.65 * Math.abs(Math.sin(pu.phase * 10)) : 1;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.translate(pu.x, pu.y + bob);
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 20;
+
+      ctx.rotate(spin);
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(0, -15);
+      ctx.lineTo(14, 0);
+      ctx.lineTo(0, 15);
+      ctx.lineTo(-14, 0);
+      ctx.closePath();
+      ctx.fill();
+      ctx.rotate(-spin);
+
+      ctx.fillStyle = '#0d1014';
+      ctx.font = 'bold 13px monospace';
+      ctx.textAlign = 'center';
+      const glyph = pu.kind === 'instakill' ? '☠' : pu.kind === 'doublepoints' ? '2x' : pu.kind === 'nuke' ? '☢' : '⌦';
+      ctx.fillText(glyph, 0, 5);
+      ctx.restore();
+
+      ctx.fillStyle = color;
+      ctx.font = 'bold 9px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(POWERUP_LABELS[pu.kind], pu.x, pu.y - 26);
     }
   }
 
@@ -2729,7 +3109,7 @@ export class Game {
     drawTokenBadge(ctx, VIEW_W / 2 + 88, 120, this.meta.tokens);
 
     const { cardW, cardH, gap, startX, y } = this.cardLayout();
-    CHARACTER_ORDER.forEach((id, i) => {
+    this.visibleCharacters().forEach((id, i) => {
       const def = CHARACTER_DEFS[id];
       const x = startX + i * (cardW + gap);
       const selected = i === this.selectedCharacterIndex;

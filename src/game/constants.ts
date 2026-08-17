@@ -14,8 +14,10 @@ export const DASH_IFRAME = 0.2;
 export const ENEMY_RADIUS = 15;
 
 // A narrow 82-degree swing meant almost every swing whiffed against enemies
-// crowding the player, so the arc and reach are both generous now.
-export const MELEE_RANGE = 66;
+// crowding the player, so the arc and reach are both generous now. The reach
+// also comfortably outranges an enemy's contact attack (~35px) so you can
+// strike without standing inside them.
+export const MELEE_RANGE = 96;
 export const MELEE_ARC = Math.PI / 1.3;
 export const MELEE_DAMAGE = 45;
 export const MELEE_COOLDOWN = 0.5;
@@ -29,6 +31,16 @@ export const WORKBENCH_COST_STEP = 350;
 export const TREASURE_BASE_BONUS = 150;
 export const UPGRADE_BASE_COST = 700;
 export const UPGRADE_COST_STEP = 450;
+export const AMMO_BASE_COST = 450;
+export const AMMO_COST_STEP = 200;
+
+// power-ups
+export const POWERUP_DROP_CHANCE = 0.035;
+export const POWERUP_LIFETIME = 22;
+export const POWERUP_PICKUP_RADIUS = 34;
+export const POWERUP_DURATION = 30;
+
+export const TILE = 50;
 
 // boss lunge tuning
 export const BOSS_LUNGE_SPEED = 720;

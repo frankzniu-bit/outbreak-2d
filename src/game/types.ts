@@ -23,7 +23,14 @@ export interface Vec2 {
   y: number;
 }
 
-export type CharacterId = 'recon' | 'brawler' | 'medic' | 'phantom' | 'warden' | 'revenant';
+export type CharacterId = 'recon' | 'brawler' | 'medic' | 'phantom' | 'warden' | 'revenant' | 'harbinger';
+
+/** Hidden until every other class, ultimate and skill has been bought. */
+export const SECRET_CHARACTER: CharacterId = 'harbinger';
+
+export type PowerUpKind = 'instakill' | 'doublepoints' | 'nuke' | 'maxammo';
+
+export type BossType = 'brute' | 'titan' | 'hive' | 'screamer';
 
 export type WeaponId =
   | 'sidewinder'
@@ -46,8 +53,8 @@ export type EnemyKind = 'runner' | 'fast' | 'tank' | 'spitter' | 'vampire' | 'ex
 
 export type CompanionSpecies = 'drone' | 'walker' | 'swarm' | 'wraith';
 
-export type RoomContent = 'start' | 'mysterybox' | 'workbench' | 'treasure' | 'upgrade' | 'empty';
+export type RoomContent = 'start' | 'mysterybox' | 'workbench' | 'treasure' | 'upgrade' | 'ammo' | 'empty';
 
-export type StationKind = 'mysterybox' | 'workbench' | 'treasure' | 'upgrade';
+export type StationKind = 'mysterybox' | 'workbench' | 'treasure' | 'upgrade' | 'ammo';
 
 export type FieldUpgrade = 'vitality' | 'power' | 'haste' | 'reload';

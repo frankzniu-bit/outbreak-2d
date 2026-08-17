@@ -1,5 +1,5 @@
 import type { RoomContent, StationKind, FieldUpgrade } from './types';
-import { WORLD_H, ROOM_W, DOOR_BASE_COST, DOOR_COST_STEP } from './constants';
+import { WORLD_H, ROOM_W, DOOR_BASE_COST, DOOR_COST_STEP, TILE } from './constants';
 
 export interface Wall {
   x: number;
@@ -41,51 +41,175 @@ const DOOR_GAP = 150;
 const FIELD_UPGRADES: FieldUpgrade[] = ['vitality', 'power', 'haste', 'reload'];
 
 /**
- * Interior cover layouts, in room-local coordinates. Every layout keeps the
- * central 350..550 x 380..620 box clear (that's where a station sits) and stays
- * 140px clear of the room's side walls so the door corridors are never blocked.
+ * Room architecture, authored on a 18x20 grid of 50px tiles ('#' = wall).
+ * Rows 7-12 are deliberately left open in every template: that band contains
+ * both the door corridors at the room edges and the station at the centre, so
+ * a layout can never seal the player out of a room or wall in a station.
  */
-const ROOM_LAYOUTS: Wall[][] = [
-  // corner pillars
+const ROOM_TEMPLATES: string[][] = [
+  // quad chambers
   [
-    { x: 200, y: 210, w: 62, h: 62 },
-    { x: 638, y: 210, w: 62, h: 62 },
-    { x: 200, y: 728, w: 62, h: 62 },
-    { x: 638, y: 728, w: 62, h: 62 },
+    '..................',
+    '..#####....#####..',
+    '..#...#....#...#..',
+    '..#...#....#...#..',
+    '..#.###....###.#..',
+    '..#............#..',
+    '..#####....#####..',
+    '..................',
+    '..................',
+    '..................',
+    '..................',
+    '..................',
+    '..................',
+    '..#####....#####..',
+    '..#...#....#...#..',
+    '..#.###....###.#..',
+    '..#...#....#...#..',
+    '..#####....#####..',
+    '..................',
+    '..................',
   ],
-  // horizontal barricades top and bottom
+  // nested vault
   [
-    { x: 180, y: 170, w: 250, h: 26 },
-    { x: 470, y: 170, w: 250, h: 26 },
-    { x: 180, y: 804, w: 250, h: 26 },
-    { x: 470, y: 804, w: 250, h: 26 },
+    '..................',
+    '....##########....',
+    '....#........#....',
+    '....#..####..#....',
+    '....#..#..#..#....',
+    '....#..#..#..#....',
+    '....#..####..#....',
+    '....#........#....',
+    '..................',
+    '..................',
+    '..................',
+    '..................',
+    '....#........#....',
+    '....#..####..#....',
+    '....#..#..#..#....',
+    '....#..#..#..#....',
+    '....#..####..#....',
+    '....##########....',
+    '..................',
+    '..................',
   ],
-  // vertical columns flanking the middle
+  // pillar hall
   [
-    { x: 232, y: 130, w: 26, h: 230 },
-    { x: 642, y: 130, w: 26, h: 230 },
-    { x: 232, y: 640, w: 26, h: 230 },
-    { x: 642, y: 640, w: 26, h: 230 },
+    '..................',
+    '...##...##...##...',
+    '...##...##...##...',
+    '..................',
+    '...##...##...##...',
+    '...##...##...##...',
+    '..................',
+    '..................',
+    '..................',
+    '..................',
+    '..................',
+    '..................',
+    '..................',
+    '...##...##...##...',
+    '...##...##...##...',
+    '..................',
+    '...##...##...##...',
+    '...##...##...##...',
+    '..................',
+    '..................',
   ],
-  // scattered crates
+  // staggered barricades
   [
-    { x: 190, y: 300, w: 52, h: 52 },
-    { x: 300, y: 160, w: 52, h: 52 },
-    { x: 610, y: 640, w: 52, h: 52 },
-    { x: 700, y: 330, w: 52, h: 52 },
-    { x: 250, y: 690, w: 52, h: 52 },
-    { x: 560, y: 820, w: 52, h: 52 },
+    '..................',
+    '..#########.......',
+    '..........#.......',
+    '.......#########..',
+    '.......#..........',
+    '..#########.......',
+    '..................',
+    '..................',
+    '..................',
+    '..................',
+    '..................',
+    '..................',
+    '..................',
+    '.......#########..',
+    '.......#..........',
+    '..#########.......',
+    '..........#.......',
+    '.......#########..',
+    '..................',
+    '..................',
   ],
-  // opposing L-shaped bunkers
+  // alcoves
   [
-    { x: 210, y: 250, w: 180, h: 26 },
-    { x: 210, y: 250, w: 26, h: 150 },
-    { x: 510, y: 724, w: 180, h: 26 },
-    { x: 664, y: 600, w: 26, h: 150 },
+    '..................',
+    '..####......####..',
+    '..#..#......#..#..',
+    '..#..########..#..',
+    '..#............#..',
+    '..####......####..',
+    '..................',
+    '..................',
+    '..................',
+    '..................',
+    '..................',
+    '..................',
+    '..................',
+    '..####......####..',
+    '..#............#..',
+    '..#..########..#..',
+    '..#..#......#..#..',
+    '..####......####..',
+    '..................',
+    '..................',
   ],
-  // sparse - occasional breather room
-  [{ x: 420, y: 150, w: 60, h: 60 }, { x: 420, y: 790, w: 60, h: 60 }],
+  // sparse - a breather between dense rooms
+  [
+    '..................',
+    '..................',
+    '..................',
+    '.....##......##...',
+    '.....##......##...',
+    '..................',
+    '..................',
+    '..................',
+    '..................',
+    '..................',
+    '..................',
+    '..................',
+    '..................',
+    '..................',
+    '..................',
+    '...##......##.....',
+    '...##......##.....',
+    '..................',
+    '..................',
+    '..................',
+  ],
 ];
+
+/** Turns a tile template into as few rects as possible by merging runs. */
+function templateToWalls(template: string[], xStart: number, mirrored: boolean): Wall[] {
+  const out: Wall[] = [];
+  const cols = template[0].length;
+  for (let row = 0; row < template.length; row++) {
+    const line = template[row];
+    let runStart = -1;
+    for (let col = 0; col <= cols; col++) {
+      const solid = col < cols && line[mirrored ? cols - 1 - col : col] === '#';
+      if (solid && runStart < 0) runStart = col;
+      if (!solid && runStart >= 0) {
+        out.push({
+          x: xStart + runStart * TILE,
+          y: row * TILE,
+          w: (col - runStart) * TILE,
+          h: TILE,
+        });
+        runStart = -1;
+      }
+    }
+  }
+  return out;
+}
 
 /**
  * An endless, procedurally-extending facility: rooms are generated on demand as the
@@ -103,15 +227,14 @@ export class Level {
     this.generateNextRoom();
   }
 
+  private lastTemplate = -1;
+
   private rollObstacles(xStart: number): Wall[] {
-    const layout = ROOM_LAYOUTS[Math.floor(Math.random() * ROOM_LAYOUTS.length)];
-    const mirrored = Math.random() < 0.5;
-    return layout.map((w) => ({
-      x: xStart + (mirrored ? ROOM_W - w.x - w.w : w.x),
-      y: w.y,
-      w: w.w,
-      h: w.h,
-    }));
+    // never repeat the previous room's layout back-to-back
+    let idx = Math.floor(Math.random() * ROOM_TEMPLATES.length);
+    if (idx === this.lastTemplate) idx = (idx + 1 + Math.floor(Math.random() * (ROOM_TEMPLATES.length - 1))) % ROOM_TEMPLATES.length;
+    this.lastTemplate = idx;
+    return templateToWalls(ROOM_TEMPLATES[idx], xStart, Math.random() < 0.5);
   }
 
   totalWidth(): number {
@@ -129,7 +252,12 @@ export class Level {
       content = 'mysterybox';
     } else {
       const roll = Math.random();
-      content = roll < 0.24 ? 'workbench' : roll < 0.44 ? 'upgrade' : roll < 0.64 ? 'treasure' : 'empty';
+      content =
+        roll < 0.2 ? 'workbench'
+        : roll < 0.38 ? 'upgrade'
+        : roll < 0.55 ? 'ammo'
+        : roll < 0.72 ? 'treasure'
+        : 'empty';
     }
 
     const xStart = index * ROOM_W;
@@ -193,6 +321,29 @@ export class Level {
 
   allWalls(): Wall[] {
     return [...this.walls, ...this.doorBarriers()];
+  }
+
+  roomIndexAt(x: number): number {
+    return Math.max(0, Math.min(this.rooms.length - 1, Math.floor(x / ROOM_W)));
+  }
+
+  /**
+   * Collision only ever needs geometry from the room you're in and its
+   * neighbours. Template rooms produce far more rects than the old block
+   * layouts, so testing every wall in an endless facility would get expensive.
+   */
+  wallsNear(x: number): Wall[] {
+    const idx = this.roomIndexAt(x);
+    const lo = (idx - 1) * ROOM_W;
+    const hi = (idx + 2) * ROOM_W;
+    const out: Wall[] = [];
+    for (const w of this.walls) {
+      if (w.x + w.w >= lo && w.x <= hi) out.push(w);
+    }
+    for (const d of this.doorBarriers()) {
+      if (d.x + d.w >= lo && d.x <= hi) out.push(d);
+    }
+    return out;
   }
 
   distToDoor(doorIndex: number, x: number, y: number): number {

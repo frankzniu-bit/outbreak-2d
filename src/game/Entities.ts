@@ -1,5 +1,5 @@
 import type { CharacterDef } from './Characters';
-import type { WeaponRoll, EnemyKind } from './types';
+import type { WeaponRoll, EnemyKind, BossType, PowerUpKind } from './types';
 import type { SkillEffects } from './SkillTree';
 import { WEAPON_DEFS } from './Weapons';
 import { PLAYER_RADIUS, DASH_SPEED, DASH_DURATION, DASH_IFRAME, ENEMY_RADIUS, DOWN_BLEEDOUT } from './constants';
@@ -55,6 +55,8 @@ export class Player {
   reviveProgress = 0;
   reviveCharges: number;
   regenAccum = 0;
+  /** Harbinger passive: kills stack a damage bonus for the run. */
+  killStacks = 0;
   shieldFrac = 0;
   shieldTimer = 0;
   damageResist: number;
@@ -174,7 +176,11 @@ export class Enemy {
   lifestealFrac = 0.35;
   armed = false;
   explodeTimer = 0;
+  bossType: BossType = 'brute';
   bossState: 'approach' | 'windup' | 'lunge' | 'cooldown' = 'approach';
+  /** Generic per-boss attack timer (volleys, summons, screams). */
+  bossAbilityTimer = 2.5;
+  enraged = false;
   bossTimer = 1.5;
   lungeDirX = 0;
   lungeDirY = 0;
@@ -213,6 +219,15 @@ export interface EnemyProjectile {
   radius: number;
   alive: boolean;
   distanceLeft: number;
+}
+
+/** A floating CoD-style drop left behind by a kill. */
+export interface PowerUp {
+  kind: PowerUpKind;
+  x: number;
+  y: number;
+  life: number;
+  phase: number;
 }
 
 /** Warden's deployable sentry. */

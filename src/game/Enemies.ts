@@ -1,4 +1,4 @@
-import type { EnemyKind } from './types';
+import type { EnemyKind, BossType } from './types';
 import { Enemy } from './Entities';
 
 interface KindDef {
@@ -52,9 +52,44 @@ export function createEnemy(x: number, y: number, kind: Exclude<EnemyKind, 'boss
   return new Enemy(x, y, kind, baseHp * def.hpMult, baseSpeed * def.speedMult, baseDamage * def.dmgMult, def.radiusMult);
 }
 
-export function createBoss(x: number, y: number, round: number): Enemy {
+interface BossDef {
+  name: string;
+  hpMult: number;
+  speed: number;
+  dmgMult: number;
+  radiusMult: number;
+  color: string;
+}
+
+export const BOSS_DEFS: Record<BossType, BossDef> = {
+  brute: { name: 'BLACKROCK BRUTE', hpMult: 16, speed: 95, dmgMult: 1, radiusMult: 2.2, color: '#c22f2f' },
+  titan: { name: 'BILE TITAN', hpMult: 21, speed: 62, dmgMult: 0.8, radiusMult: 2.6, color: '#6bcf5f' },
+  hive: { name: 'HIVE MOTHER', hpMult: 14, speed: 84, dmgMult: 0.9, radiusMult: 2.3, color: '#b13d8a' },
+  screamer: { name: 'SCREAMER', hpMult: 11, speed: 168, dmgMult: 1.15, radiusMult: 1.7, color: '#ffd23d' },
+};
+
+export const BOSS_TYPES: BossType[] = ['brute', 'titan', 'hive', 'screamer'];
+
+/**
+ * Boss rounds roll a random archetype. `defeated` is how many bosses the run
+ * has already put down, so every subsequent boss is meaningfully tougher than
+ * the last regardless of which type shows up.
+ */
+export function createBoss(x: number, y: number, round: number, defeated: number): Enemy {
+  const type = BOSS_TYPES[Math.floor(Math.random() * BOSS_TYPES.length)];
+  const def = BOSS_DEFS[type];
+  const escalation = 1 + defeated * 0.4;
   const baseHp = 32 + round * 6;
-  const boss = new Enemy(x, y, 'boss', baseHp * 16, 95, 26 + round * 1.5, 2.2);
+  const boss = new Enemy(
+    x,
+    y,
+    'boss',
+    baseHp * def.hpMult * escalation,
+    def.speed * (1 + defeated * 0.05),
+    (26 + round * 1.5) * def.dmgMult * (1 + defeated * 0.18),
+    def.radiusMult,
+  );
+  boss.bossType = type;
   boss.bossState = 'approach';
   boss.bossTimer = 1.5;
   return boss;

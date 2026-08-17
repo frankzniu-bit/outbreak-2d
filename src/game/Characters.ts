@@ -111,6 +111,24 @@ export const CHARACTER_DEFS: Record<CharacterId, CharacterDef> = {
     unlockCost: 900,
     tagline: 'ENGINEER',
   },
+  harbinger: {
+    id: 'harbinger',
+    name: 'Harbinger',
+    color: '#c9b3ff',
+    passiveLabel: 'Each kill stacks +2% damage for the round (max +60%)',
+    activeLabel: 'Rift — drag nearby enemies in and shred them',
+    activeCooldown: 8,
+    visionMult: 1.3,
+    maxHp: 124,
+    moveSpeed: 258,
+    meleeDamageMult: 1.8,
+    dashCooldownBase: 0.6,
+    ultimateLabel: 'Oblivion — erase everything around you',
+    ultimateCooldown: 62,
+    ultimateColor: '#efe3ff',
+    unlockCost: 2500,
+    tagline: 'THE END',
+  },
   revenant: {
     id: 'revenant',
     name: 'Revenant',
@@ -131,4 +149,4 @@ export const CHARACTER_DEFS: Record<CharacterId, CharacterDef> = {
   },
 };
 
-export const CHARACTER_ORDER: CharacterId[] = ['recon', 'brawler', 'medic', 'phantom', 'warden', 'revenant'];
+export const CHARACTER_ORDER: CharacterId[] = ['recon', 'brawler', 'medic', 'phantom', 'warden', 'revenant', 'harbinger'];

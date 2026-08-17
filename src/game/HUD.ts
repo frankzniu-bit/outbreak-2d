@@ -21,7 +21,8 @@ export interface HudState {
   intermissionTimer: number;
   tutorialTimer: number;
   controlsHint: string;
-  boss: { hp: number; maxHp: number } | null;
+  boss: { hp: number; maxHp: number; name: string; color: string } | null;
+  powerUps: { label: string; color: string; secondsLeft: number }[];
   companion: { name: string; rarity: Rarity } | null;
   partner: HudPartner | null;
   muted: boolean;
@@ -32,6 +33,8 @@ const STATION_COLOR: Record<string, string> = {
   mysterybox: '#a24ddc',
   workbench: '#ff9d2e',
   treasure: '#ffd23d',
+  upgrade: '#6ee7d5',
+  ammo: '#8dd6ff',
 };
 
 function rr(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
@@ -220,16 +223,16 @@ export function drawHud(ctx: CanvasRenderingContext2D, player: Player, level: Le
     ctx.fillStyle = '#1a1410';
     rr(ctx, bx, by, bw, 12, 4);
     ctx.fill();
-    ctx.fillStyle = '#c22f2f';
+    ctx.fillStyle = hud.boss.color;
     rr(ctx, bx + 1.5, by + 1.5, Math.max(0, (bw - 3) * (hud.boss.hp / hud.boss.maxHp)), 9, 3);
     ctx.fill();
     ctx.strokeStyle = 'rgba(255,255,255,0.3)';
     ctx.lineWidth = 1.5;
     rr(ctx, bx, by, bw, 12, 4);
     ctx.stroke();
-    ctx.fillStyle = '#ff8a7a';
+    ctx.fillStyle = hud.boss.color;
     ctx.font = 'bold 11px monospace';
-    ctx.fillText('BLACKROCK BRUTE', VIEW_W / 2, by - 4);
+    ctx.fillText(hud.boss.name, VIEW_W / 2, by - 4);
   }
 
   // ---------- minimap ----------
@@ -300,6 +303,7 @@ export function drawHud(ctx: CanvasRenderingContext2D, player: Player, level: Le
   if (player.character.id === 'brawler' && player.ultimateActiveTimer > 0) chips.push({ label: 'RAMPAGE', color: '#ff8a7a' });
   if (player.character.id === 'warden' && player.ultimateActiveTimer > 0) chips.push({ label: 'FORTRESS', color: '#ffd98a' });
   if (player.visionBoostTimer > 0) chips.push({ label: 'FLARE', color: '#8dffb0' });
+  for (const pu of hud.powerUps) chips.push({ label: `${pu.label} ${Math.ceil(pu.secondsLeft)}s`, color: pu.color });
   if (hud.muted) chips.push({ label: 'MUTED', color: '#8d97a5' });
   let chipX = 16;
   const chipY = VIEW_H - 34;
@@ -431,8 +435,8 @@ export function drawHud(ctx: CanvasRenderingContext2D, player: Player, level: Le
     ctx.fillText(hud.netStatus, VIEW_W - 16, mmY + mmH + 16);
   }
 
-  // ---------- downed overlay ----------
-  if (player.downed) {
+  // ---------- downed overlay (co-op only: solo has nobody to revive you) ----------
+  if (player.downed && hud.partner) {
     ctx.fillStyle = 'rgba(120,0,0,0.22)';
     ctx.fillRect(0, 0, VIEW_W, VIEW_H);
     ctx.textAlign = 'center';

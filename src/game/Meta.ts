@@ -1,4 +1,4 @@
-import { RARITY_WEIGHTS, type CharacterId, type Rarity, type CompanionSpecies } from './types';
+import { RARITY_WEIGHTS, SECRET_CHARACTER, type CharacterId, type Rarity, type CompanionSpecies } from './types';
 import { META_STORAGE_KEY, SETTINGS_STORAGE_KEY } from './constants';
 import { SPECIES_ORDER, COMPANION_LEVEL_CAP, newCompanionId, type CompanionSave } from './Companions';
 
@@ -28,8 +28,8 @@ function defaultMeta(): MetaState {
   return {
     essence: 0,
     tokens: 0,
-    ultimatesUnlocked: { recon: false, brawler: false, medic: false, phantom: false, warden: false, revenant: false },
-    classesUnlocked: { recon: true, brawler: true, medic: true, phantom: false, warden: false, revenant: false },
+    ultimatesUnlocked: { recon: false, brawler: false, medic: false, phantom: false, warden: false, revenant: false, harbinger: false },
+    classesUnlocked: { recon: true, brawler: true, medic: true, phantom: false, warden: false, revenant: false, harbinger: false },
     skills: [],
     companions: [starter],
     activeCompanionId: starter.id,
@@ -116,6 +116,19 @@ export function tokensForRun(roundsSurvived: number, kills: number, tokenMult: n
 }
 
 export const ULTIMATE_UNLOCK_COST = 400;
+
+/**
+ * The secret class stays completely hidden until the player has bought
+ * everything else: every other class, every other ultimate, and every skill.
+ */
+export function secretRevealed(meta: MetaState, allSkillIds: string[]): boolean {
+  for (const id of Object.keys(meta.classesUnlocked) as CharacterId[]) {
+    if (id === SECRET_CHARACTER) continue;
+    if (!meta.classesUnlocked[id]) return false;
+    if (!meta.ultimatesUnlocked[id]) return false;
+  }
+  return allSkillIds.every((s) => meta.skills.includes(s));
+}
 
 export function companionLevelCost(level: number): number | null {
   return level < COMPANION_LEVEL_CAP ? 140 + level * 110 : null;
