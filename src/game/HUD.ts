@@ -1,7 +1,6 @@
 import { WEAPON_DEFS, rarityColor } from './Weapons';
 import type { Player } from './Entities';
 import type { Level } from './Level';
-import { companionTierName } from './Companion';
 import type { Rarity } from './types';
 import { VIEW_W, VIEW_H, ROOM_W, DOWN_BLEEDOUT } from './constants';
 
@@ -23,7 +22,7 @@ export interface HudState {
   tutorialTimer: number;
   controlsHint: string;
   boss: { hp: number; maxHp: number } | null;
-  companion: { level: number; rarity: Rarity } | null;
+  companion: { name: string; rarity: Rarity } | null;
   partner: HudPartner | null;
   muted: boolean;
   netStatus: string | null;
@@ -419,11 +418,7 @@ export function drawHud(ctx: CanvasRenderingContext2D, player: Player, level: Le
     ctx.textAlign = 'right';
     ctx.font = 'bold 10px monospace';
     ctx.fillStyle = rarityColor(hud.companion.rarity);
-    ctx.fillText(
-      `${companionTierName(hud.companion.level).toUpperCase()} · ${hud.companion.rarity.toUpperCase()}`,
-      cardX + cardW,
-      cardY - 8,
-    );
+    ctx.fillText(`${hud.companion.name.toUpperCase()} · ${hud.companion.rarity.toUpperCase()}`, cardX + cardW, cardY - 8);
   }
 
   if (hud.netStatus) {

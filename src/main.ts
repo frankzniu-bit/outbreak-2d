@@ -8,25 +8,29 @@ app.innerHTML = `
     <canvas id="game-canvas"></canvas>
     <div id="coop-panel">
       <div class="coop-card">
-        <h2>CO-OP LINK</h2>
-        <p>
-          No server involved — you and your friend swap two codes by hand (chat, DM, whatever).
-          <strong>Host:</strong> press Create Invite, send the code, then paste their reply below and press Accept Reply.
-          <strong>Joining:</strong> paste their invite in the lower box and press Answer Invite, then send the generated reply back.
-        </p>
+        <div class="coop-banner">
+          <span class="coop-gem">◆</span>
+          <h2>CO-OP LINK</h2>
+          <span class="coop-gem">◆</span>
+        </div>
+        <p class="coop-sub">Two survivors, one facility. No server — just swap two codes.</p>
 
-        <textarea id="coop-out" readonly placeholder="your code will appear here"></textarea>
-        <button class="coop-btn" id="coop-create">1. CREATE INVITE</button>
+        <div class="coop-lane">
+          <div class="coop-lane-head"><span class="coop-badge">HOST</span> start the run</div>
+          <button class="coop-btn primary" id="coop-create"><span class="coop-step">1</span> CREATE INVITE</button>
+          <textarea id="coop-out" readonly placeholder="your code appears here — send it to your partner"></textarea>
+          <button class="coop-btn primary" id="coop-accept"><span class="coop-step">3</span> ACCEPT REPLY</button>
+        </div>
 
-        <textarea id="coop-in" placeholder="paste the code you were sent here"></textarea>
-        <button class="coop-btn" id="coop-accept">2. ACCEPT REPLY</button>
+        <div class="coop-or"><span>OR</span></div>
 
-        <div class="coop-divider"></div>
-        <p>Joining instead? Paste the invite in the lower box and press Answer Invite, then send the generated reply back to the host.</p>
-        <button class="coop-btn" id="coop-answer">ANSWER INVITE</button>
+        <div class="coop-lane">
+          <div class="coop-lane-head"><span class="coop-badge join">JOIN</span> drop into their run</div>
+          <textarea id="coop-in" placeholder="paste the code you were sent here"></textarea>
+          <button class="coop-btn primary" id="coop-answer"><span class="coop-step">2</span> ANSWER INVITE</button>
+        </div>
 
         <div class="coop-status" id="coop-status"></div>
-        <div class="coop-divider"></div>
         <button class="coop-btn secondary" id="coop-close">CLOSE</button>
       </div>
     </div>

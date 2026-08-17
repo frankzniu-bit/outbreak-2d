@@ -29,7 +29,7 @@ export const TREASURE_BASE_BONUS = 150;
 export const ROUND_INTERMISSION = 4;
 export const BOSS_ROUND_INTERVAL = 4;
 
-export const META_STORAGE_KEY = 'outbreak2d_meta_v2';
+export const META_STORAGE_KEY = 'outbreak2d_meta_v3';
 export const KEYBINDS_STORAGE_KEY = 'outbreak2d_keybinds_v1';
 export const SETTINGS_STORAGE_KEY = 'outbreak2d_settings_v1';
 

@@ -4,7 +4,15 @@ import { Particles, PointFlyers } from './Particles';
 import { Sfx } from './Audio';
 import { Level, resolveWallCollisions, circleRectCollide, type Station, type RoomInfo, type DoorInfo } from './Level';
 import { Player, Enemy, enemyColor, PLAYER_RADIUS, type EnemyProjectile, type Turret } from './Entities';
-import { Companion, drawDrone, companionTierName } from './Companion';
+import {
+  Companion,
+  drawCompanion,
+  companionName,
+  companionStats,
+  SPECIES_DEFS,
+  COMPANION_LEVEL_CAP,
+  type CompanionSave,
+} from './Companions';
 import { CHARACTER_DEFS, CHARACTER_ORDER, type CharacterDef } from './Characters';
 import { pickEnemyKind, createEnemy, createBoss } from './Enemies';
 import {
@@ -29,9 +37,12 @@ import {
   tokensForRun,
   ULTIMATE_UNLOCK_COST,
   companionLevelCost,
-  COMPANION_LEVEL_CAP,
   companionBoxCost,
-  rollCompanionRarity,
+  rollNewCompanion,
+  companionSlots,
+  nextSlotCost,
+  activeCompanion,
+  MAX_COMPANION_SLOTS,
   type MetaState,
   type AudioSettings,
 } from './Meta';
@@ -63,7 +74,7 @@ import {
   REVIVE_HP_FRAC,
 } from './constants';
 
-type Scene = 'select' | 'hub' | 'controls' | 'playing' | 'results';
+type Scene = 'select' | 'hub' | 'companions' | 'controls' | 'playing' | 'results';
 
 interface RunStats {
   kills: number;
@@ -265,7 +276,7 @@ export class Game {
       tu: this.turrets.map((t) => ({ x: Math.round(t.x), y: Math.round(t.y), s: +t.spin.toFixed(2) })),
       cm: this.companion
         ? { x: Math.round(this.companion.x), y: Math.round(this.companion.y), f: +this.companion.facing.toFixed(2),
-            ph: +this.companion.animPhase.toFixed(2), rr: this.companion.rarity, lv: this.companion.level }
+            ph: +this.companion.animPhase.toFixed(2), sv: this.companion.save }
         : null,
       lv: {
         rooms: this.level.rooms,
@@ -357,13 +368,13 @@ export class Game {
 
     const cm = msg.cm as Record<string, unknown> | null;
     if (cm) {
-      if (!this.companion) this.companion = new Companion(cm.x as number, cm.y as number, cm.lv as number, cm.rr as Rarity);
+      const save = cm.sv as CompanionSave;
+      if (!this.companion) this.companion = new Companion(cm.x as number, cm.y as number, save);
       this.companion.x = cm.x as number;
       this.companion.y = cm.y as number;
       this.companion.facing = cm.f as number;
       this.companion.animPhase = cm.ph as number;
-      this.companion.rarity = cm.rr as Rarity;
-      this.companion.level = cm.lv as number;
+      this.companion.save = save;
     } else {
       this.companion = null;
     }
@@ -441,6 +452,7 @@ export class Game {
 
     if (this.scene === 'select') return this.updateSelect();
     if (this.scene === 'hub') return this.updateHub();
+    if (this.scene === 'companions') return this.updateCompanions();
     if (this.scene === 'controls') return this.updateControls();
     if (this.scene === 'results') return this.updateResults();
 
@@ -526,6 +538,7 @@ export class Game {
     if (this.input.wasPressed('ArrowRight')) this.selectedCharacterIndex = (this.selectedCharacterIndex + 1) % 6;
     if (this.actionPressed('upgradesMenu')) this.scene = 'hub';
     if (this.input.wasPressed('KeyC')) this.scene = 'controls';
+    if (this.input.wasPressed('KeyB')) this.scene = 'companions';
 
     if (this.input.wasMousePressed()) {
       const idx = this.hitTestCharacterCard(this.input.mouseX, this.input.mouseY);
@@ -533,6 +546,7 @@ export class Game {
       const btn = this.hitTestSelectButtons(this.input.mouseX, this.input.mouseY);
       if (btn === 'drop') this.pressDropIn();
       if (btn === 'upgrades') this.scene = 'hub';
+      if (btn === 'pets') this.scene = 'companions';
       if (btn === 'controls') this.scene = 'controls';
       if (btn === 'coop') this.coopUI?.open();
     }
@@ -591,18 +605,18 @@ export class Game {
   }
 
   private selectButtonLayout() {
-    const btnW = 190;
+    const btnW = 172;
     const btnH = 50;
-    const gap = 14;
-    const totalW = btnW * 4 + gap * 3;
+    const gap = 13;
+    const totalW = btnW * 5 + gap * 4;
     return { btnW, btnH, gap, startX: VIEW_W / 2 - totalW / 2, y: 486 };
   }
 
-  private hitTestSelectButtons(mx: number, my: number): 'drop' | 'upgrades' | 'controls' | 'coop' | null {
+  private hitTestSelectButtons(mx: number, my: number): 'drop' | 'upgrades' | 'pets' | 'controls' | 'coop' | null {
     const { btnW, btnH, gap, startX, y } = this.selectButtonLayout();
     if (my < y || my > y + btnH) return null;
-    const keys: ('drop' | 'upgrades' | 'controls' | 'coop')[] = ['drop', 'upgrades', 'controls', 'coop'];
-    for (let i = 0; i < 4; i++) {
+    const keys: ('drop' | 'upgrades' | 'pets' | 'controls' | 'coop')[] = ['drop', 'upgrades', 'pets', 'controls', 'coop'];
+    for (let i = 0; i < 5; i++) {
       const bx = startX + i * (btnW + gap);
       if (mx >= bx && mx <= bx + btnW) return keys[i];
     }
@@ -631,7 +645,8 @@ export class Game {
     this.localIndex = 0;
     if (this.isHost && this.guestReady) this.spawnRemotePlayer();
 
-    this.companion = new Companion(90, WORLD_H / 2 + 50, this.meta.companionLevel, this.meta.companionRarity);
+    const activeSave = activeCompanion(this.meta);
+    this.companion = activeSave ? new Companion(90, WORLD_H / 2 + 50, activeSave) : null;
     this.turrets = [];
     this.enemies = [];
     this.projectiles = [];
@@ -731,43 +746,140 @@ export class Game {
         saveMeta(this.meta);
       },
     });
-    y += h + 10;
-
-    const evolveCost = companionLevelCost(this.meta.companionLevel);
-    rows.push({
-      label: `Evolve ${companionTierName(this.meta.companionLevel)}`,
-      sub: evolveCost === null ? 'MAX TIER' : `tier ${this.meta.companionLevel}/${COMPANION_LEVEL_CAP}`,
-      x, y, w, h,
-      accent: '#9fe6ff',
-      currency: 'tokens',
-      cost: evolveCost,
-      buyable: evolveCost !== null && this.meta.tokens >= evolveCost,
-      onBuy: () => {
-        this.meta.tokens -= evolveCost!;
-        this.meta.companionLevel++;
-        saveMeta(this.meta);
-      },
-    });
-    y += h + 10;
-
-    const boxCost = companionBoxCost(this.meta.companionBoxPulls);
-    rows.push({
-      label: 'Companion Box',
-      sub: `rarity: ${this.meta.companionRarity.toUpperCase()} · never downgrades`,
-      x, y, w, h,
-      accent: rarityColor(this.meta.companionRarity),
-      currency: 'tokens',
-      cost: boxCost,
-      buyable: this.meta.tokens >= boxCost,
-      onBuy: () => {
-        this.meta.tokens -= boxCost;
-        this.meta.companionBoxPulls++;
-        this.meta.companionRarity = rollCompanionRarity(this.meta.companionRarity);
-        saveMeta(this.meta);
-      },
-    });
-
     return rows;
+  }
+
+  // ---------------- companions screen ----------------
+
+  private companionCardRect(i: number) {
+    const w = 220;
+    const gap = 18;
+    const total = MAX_COMPANION_SLOTS * w + (MAX_COMPANION_SLOTS - 1) * gap;
+    return { x: VIEW_W / 2 - total / 2 + i * (w + gap), y: 140, w, h: 330 };
+  }
+
+  private companionButtons(i: number) {
+    const r = this.companionCardRect(i);
+    return {
+      evolve: { x: r.x + 12, y: r.y + 236, w: 92, h: 30 },
+      remove: { x: r.x + 116, y: r.y + 236, w: 92, h: 30 },
+      select: { x: r.x + 12, y: r.y + 276, w: 196, h: 34 },
+    };
+  }
+
+  private boxButtonRect() {
+    return { x: VIEW_W / 2 - 320, y: 512, w: 300, h: 48 };
+  }
+
+  private companionBackRect() {
+    return { x: VIEW_W / 2 + 20, y: 512, w: 300, h: 48 };
+  }
+
+  private updateCompanions() {
+    if (this.input.wasPressed('Escape')) {
+      this.scene = 'select';
+      return;
+    }
+    if (!this.input.wasMousePressed()) return;
+    const mx = this.input.mouseX;
+    const my = this.input.mouseY;
+    const inside = (r: { x: number; y: number; w: number; h: number }) =>
+      mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h;
+
+    if (inside(this.companionBackRect())) {
+      this.scene = 'select';
+      return;
+    }
+
+    if (inside(this.boxButtonRect())) {
+      this.pullCompanionBox();
+      return;
+    }
+
+    const slots = companionSlots(this.meta);
+    for (let i = 0; i < MAX_COMPANION_SLOTS; i++) {
+      const card = this.companionCardRect(i);
+      if (!inside(card)) continue;
+
+      if (i >= slots) {
+        // locked slot - buying it is the only interaction
+        const cost = nextSlotCost(this.meta);
+        if (i !== slots) {
+          this.notice('Unlock the previous slot first.');
+        } else if (cost === null) {
+          this.notice('All slots unlocked.');
+        } else if (this.meta.tokens < cost) {
+          this.notice(`Slot ${i + 1} costs ${cost} tokens (you have ${this.meta.tokens}).`);
+        } else {
+          this.meta.tokens -= cost;
+          this.meta.extraSlots++;
+          saveMeta(this.meta);
+          this.sfx.rarityFanfare('rare');
+          this.notice(`Slot ${i + 1} unlocked.`);
+        }
+        return;
+      }
+
+      const pet = this.meta.companions[i];
+      if (!pet) {
+        this.notice('Empty slot — pull the companion box to fill it.');
+        return;
+      }
+
+      const btns = this.companionButtons(i);
+      if (inside(btns.evolve)) {
+        const cost = companionLevelCost(pet.level);
+        if (cost === null) this.notice(`${companionName(pet)} is already max tier.`);
+        else if (this.meta.tokens < cost) this.notice(`Evolving costs ${cost} tokens (you have ${this.meta.tokens}).`);
+        else {
+          this.meta.tokens -= cost;
+          pet.level++;
+          saveMeta(this.meta);
+          this.sfx.rarityFanfare('epic');
+          this.notice(`Evolved into ${companionName(pet)}!`);
+        }
+        return;
+      }
+      if (inside(btns.remove)) {
+        if (this.meta.companions.length <= 1) {
+          this.notice('You must keep at least one companion.');
+          return;
+        }
+        this.meta.companions = this.meta.companions.filter((c) => c.id !== pet.id);
+        if (this.meta.activeCompanionId === pet.id) this.meta.activeCompanionId = this.meta.companions[0].id;
+        saveMeta(this.meta);
+        this.notice(`Released ${companionName(pet)}.`);
+        return;
+      }
+      if (inside(btns.select)) {
+        this.meta.activeCompanionId = pet.id;
+        saveMeta(this.meta);
+        this.sfx.points();
+        this.notice(`${companionName(pet)} deployed.`);
+        return;
+      }
+      return;
+    }
+  }
+
+  private pullCompanionBox() {
+    const cost = companionBoxCost(this.meta.companionBoxPulls);
+    if (this.meta.companions.length >= companionSlots(this.meta)) {
+      this.notice('All slots full — release one or buy another slot.');
+      return;
+    }
+    if (this.meta.tokens < cost) {
+      this.notice(`The box costs ${cost} tokens (you have ${this.meta.tokens}).`);
+      return;
+    }
+    this.meta.tokens -= cost;
+    this.meta.companionBoxPulls++;
+    const pet = rollNewCompanion();
+    this.meta.companions.push(pet);
+    if (!this.meta.activeCompanionId) this.meta.activeCompanionId = pet.id;
+    saveMeta(this.meta);
+    this.sfx.rarityFanfare(pet.rarity);
+    this.notice(`${companionName(pet)} (${pet.rarity.toUpperCase()}) joined your roster!`);
   }
 
   // ---------------- controls / audio settings ----------------
@@ -1930,6 +2042,7 @@ export class Game {
 
     if (this.scene === 'select') return this.renderSelect();
     if (this.scene === 'hub') return this.renderHub();
+    if (this.scene === 'companions') return this.renderCompanions();
     if (this.scene === 'controls') return this.renderControls();
     if (this.scene === 'results') return this.renderResults();
     if (!this.players.length) return;
@@ -1945,7 +2058,10 @@ export class Game {
     this.renderProjectiles();
     this.renderTurrets();
     this.renderEnemies();
-    if (this.companion) drawDrone(ctx, this.companion);
+    if (this.companion) {
+      const c = this.companion;
+      drawCompanion(ctx, c.species, c.level, c.rarity, c.x, c.y, c.facing, c.animPhase);
+    }
     for (const p of this.players) this.renderPlayer(p);
     this.particles.draw(ctx);
     this.pointFlyers.draw(ctx);
@@ -1981,7 +2097,7 @@ export class Game {
       tutorialTimer: this.tutorialTimer,
       controlsHint: hint,
       boss: boss ? { hp: boss.hp, maxHp: boss.maxHp } : null,
-      companion: this.companion ? { level: this.companion.level, rarity: this.companion.rarity } : null,
+      companion: this.companion ? { name: this.companion.name, rarity: this.companion.rarity } : null,
       partner: partnerPlayer
         ? {
             name: partnerPlayer.character.name,
@@ -2317,13 +2433,14 @@ export class Game {
     mask.fillRect(0, 0, VIEW_W, VIEW_H);
     mask.globalCompositeOperation = 'destination-out';
 
+    // Only your own torch carves the darkness - a partner's beam lighting your
+    // screen would give away rooms you haven't walked into.
     for (const p of this.players) {
-      if (!p.alive) continue;
-      const isLocal = p.index === this.localIndex;
+      if (!p.alive || p.index !== this.localIndex) continue;
       const sx = p.x - this.camera.x + this.camera.offsetX;
       const sy = p.y - this.camera.y + this.camera.offsetY;
       const boost = p.visionBoostTimer > 0 ? 1.5 : 1;
-      const coneR = Math.max(60, BASE_VISION_RADIUS * p.character.visionMult * boost + Math.sin(this.flickerPhase * 7) * 5) * (isLocal ? 1 : 0.8);
+      const coneR = Math.max(60, BASE_VISION_RADIUS * p.character.visionMult * boost + Math.sin(this.flickerPhase * 7) * 5);
       const ambientR = coneR * 0.44;
 
       const amb = mask.createRadialGradient(sx, sy, 0, sx, sy, ambientR);
@@ -2491,10 +2608,11 @@ export class Game {
     const my = this.input.mouseY;
     const hov = (bx: number) => mx >= bx && mx <= bx + btnW && my >= by && my <= by + btnH;
     const dropLabel = this.isGuest ? (this.awaitingHost ? 'WAITING…' : 'READY UP') : 'DROP IN';
-    drawButton(ctx, bsx, by, btnW, btnH, dropLabel, '#3ddc73', hov(bsx));
-    drawButton(ctx, bsx + btnW + bg, by, btnW, btnH, 'SKILL TREE [U]', '#3d9bdc', hov(bsx + btnW + bg));
-    drawButton(ctx, bsx + (btnW + bg) * 2, by, btnW, btnH, 'CONTROLS [C]', '#a24ddc', hov(bsx + (btnW + bg) * 2));
-    drawButton(ctx, bsx + (btnW + bg) * 3, by, btnW, btnH, this.net.connected ? 'CO-OP ✓' : 'CO-OP', this.net.connected ? '#6ee7d5' : '#e0713d', hov(bsx + (btnW + bg) * 3));
+    drawButton(ctx, bsx, by, btnW, btnH, dropLabel, '#3ddc73', hov(bsx), '#0a0c10', 13);
+    drawButton(ctx, bsx + btnW + bg, by, btnW, btnH, 'SKILLS [U]', '#3d9bdc', hov(bsx + btnW + bg), '#0a0c10', 13);
+    drawButton(ctx, bsx + (btnW + bg) * 2, by, btnW, btnH, 'COMPANIONS [B]', '#9fe6ff', hov(bsx + (btnW + bg) * 2), '#0a0c10', 12);
+    drawButton(ctx, bsx + (btnW + bg) * 3, by, btnW, btnH, 'CONTROLS [C]', '#a24ddc', hov(bsx + (btnW + bg) * 3), '#0a0c10', 13);
+    drawButton(ctx, bsx + (btnW + bg) * 4, by, btnW, btnH, this.net.connected ? 'CO-OP ✓' : 'CO-OP', this.net.connected ? '#6ee7d5' : '#e0713d', hov(bsx + (btnW + bg) * 4), '#0a0c10', 13);
 
     ctx.fillStyle = '#5b6069';
     ctx.font = '11px monospace';
@@ -2612,6 +2730,122 @@ export class Game {
 
     drawButton(ctx, VIEW_W / 2 - 90, VIEW_H - 68, 180, 44, 'BACK [Esc]', '#e04b3d',
       mx >= VIEW_W / 2 - 90 && mx <= VIEW_W / 2 + 90 && my >= VIEW_H - 68 && my <= VIEW_H - 24);
+    this.renderNotice();
+  }
+
+  private renderCompanions() {
+    const ctx = this.ctx;
+    this.renderMenuBackground();
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#f4efe6';
+    ctx.font = 'bold 28px monospace';
+    ctx.fillText('COMPANIONS', VIEW_W / 2, 46);
+    drawTokenBadge(ctx, VIEW_W / 2, 76, this.meta.tokens);
+
+    const slots = companionSlots(this.meta);
+    const mx = this.input.mouseX;
+    const my = this.input.mouseY;
+    const inside = (r: { x: number; y: number; w: number; h: number }) =>
+      mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h;
+
+    for (let i = 0; i < MAX_COMPANION_SLOTS; i++) {
+      const card = this.companionCardRect(i);
+      const unlocked = i < slots;
+      const pet = unlocked ? this.meta.companions[i] : undefined;
+      const isActive = pet && pet.id === this.meta.activeCompanionId;
+      const accent = pet ? rarityColor(pet.rarity) : '#4d5259';
+
+      drawPanel(ctx, card.x, card.y, card.w, card.h,
+        isActive ? 'rgba(255,255,255,0.09)' : 'rgba(255,255,255,0.035)',
+        isActive ? accent : 'rgba(255,255,255,0.13)', isActive ? 2.5 : 1, 14);
+
+      if (!unlocked) {
+        const cost = i === slots ? nextSlotCost(this.meta) : null;
+        ctx.textAlign = 'center';
+        ctx.font = 'bold 26px monospace';
+        ctx.fillStyle = '#4d5259';
+        ctx.fillText('🔒', card.x + card.w / 2, card.y + card.h / 2 - 16);
+        ctx.font = 'bold 12px monospace';
+        ctx.fillStyle = cost === null ? '#4d5259' : '#9fe6ff';
+        ctx.fillText(`SLOT ${i + 1}`, card.x + card.w / 2, card.y + card.h / 2 + 8);
+        if (cost !== null) {
+          ctx.font = 'bold 13px monospace';
+          ctx.fillStyle = this.meta.tokens >= cost ? '#9fe6ff' : '#5b6069';
+          ctx.fillText(`⬢ ${cost}`, card.x + card.w / 2, card.y + card.h / 2 + 30);
+          ctx.font = '9px monospace';
+          ctx.fillStyle = '#5b6069';
+          ctx.fillText('click to unlock', card.x + card.w / 2, card.y + card.h / 2 + 46);
+        } else {
+          ctx.font = '9px monospace';
+          ctx.fillStyle = '#4d5259';
+          ctx.fillText('unlock previous slot first', card.x + card.w / 2, card.y + card.h / 2 + 28);
+        }
+        continue;
+      }
+
+      if (!pet) {
+        ctx.textAlign = 'center';
+        ctx.font = 'bold 13px monospace';
+        ctx.fillStyle = '#5b6069';
+        ctx.fillText('EMPTY SLOT', card.x + card.w / 2, card.y + card.h / 2 - 4);
+        ctx.font = '9px monospace';
+        ctx.fillText('pull the box below', card.x + card.w / 2, card.y + card.h / 2 + 14);
+        continue;
+      }
+
+      // animated sprite preview
+      drawCompanion(ctx, pet.species, pet.level, pet.rarity, card.x + card.w / 2, card.y + 72,
+        Math.sin(this.flickerPhase * 0.7) * 0.6, this.flickerPhase, 2.3);
+
+      ctx.textAlign = 'center';
+      ctx.font = 'bold 14px monospace';
+      ctx.fillStyle = accent;
+      ctx.fillText(companionName(pet), card.x + card.w / 2, card.y + 144);
+
+      ctx.font = 'bold 9px monospace';
+      ctx.fillStyle = '#8d97a5';
+      ctx.fillText(`${pet.rarity.toUpperCase()} · TIER ${pet.level}/${COMPANION_LEVEL_CAP}`, card.x + card.w / 2, card.y + 160);
+
+      ctx.font = '8px monospace';
+      ctx.fillStyle = '#6b7078';
+      wrapText(ctx, SPECIES_DEFS[pet.species].blurb, card.x + card.w / 2, card.y + 176, card.w - 24, 10);
+
+      const stats = companionStats(pet);
+      ctx.textAlign = 'left';
+      ctx.font = '10px monospace';
+      ctx.fillStyle = '#ff8a8a';
+      ctx.fillText(`DMG ${stats.damage.toFixed(1)}`, card.x + 16, card.y + 206);
+      ctx.fillStyle = '#8dd6ff';
+      ctx.fillText(`RATE ${stats.fireRate.toFixed(2)}/s`, card.x + 16, card.y + 220);
+      ctx.fillStyle = '#9fe6ff';
+      ctx.fillText(`RANGE ${Math.round(stats.range)}`, card.x + 118, card.y + 206);
+
+      const btns = this.companionButtons(i);
+      const evolveCost = companionLevelCost(pet.level);
+      drawButton(ctx, btns.evolve.x, btns.evolve.y, btns.evolve.w, btns.evolve.h,
+        evolveCost === null ? 'MAX' : `⬢ ${evolveCost}`,
+        evolveCost !== null && this.meta.tokens >= evolveCost ? '#3ddc73' : '#3a4048',
+        inside(btns.evolve), '#0a0c10', 11);
+      drawButton(ctx, btns.remove.x, btns.remove.y, btns.remove.w, btns.remove.h, 'RELEASE', '#e04b3d', inside(btns.remove), '#0a0c10', 11);
+      drawButton(ctx, btns.select.x, btns.select.y, btns.select.w, btns.select.h,
+        isActive ? '★ DEPLOYED' : 'DEPLOY', isActive ? accent : '#3d9bdc', inside(btns.select), '#0a0c10', 12);
+    }
+
+    const boxCost = companionBoxCost(this.meta.companionBoxPulls);
+    const boxRect = this.boxButtonRect();
+    const backRect = this.companionBackRect();
+    const canPull = this.meta.tokens >= boxCost && this.meta.companions.length < slots;
+    drawButton(ctx, boxRect.x, boxRect.y, boxRect.w, boxRect.h, `COMPANION BOX  ⬢ ${boxCost}`,
+      canPull ? '#a24ddc' : '#3a4048', inside(boxRect), '#0a0c10', 14);
+    drawButton(ctx, backRect.x, backRect.y, backRect.w, backRect.h, 'BACK [Esc]', '#e04b3d', inside(backRect), '#0a0c10', 14);
+
+    ctx.textAlign = 'center';
+    ctx.font = '10px monospace';
+    ctx.fillStyle = '#5b6069';
+    ctx.fillText(
+      `${this.meta.companions.length}/${slots} slots used · each pull rolls a new species and rarity · evolving raises tier and reshapes the sprite`,
+      VIEW_W / 2, 584,
+    );
     this.renderNotice();
   }
 

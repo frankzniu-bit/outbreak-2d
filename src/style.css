@@ -39,15 +39,16 @@ canvas {
   box-shadow: 0 0 60px rgba(0, 0, 0, 0.9);
 }
 
-/* Copy-paste co-op signalling panel, overlaid on the canvas when co-op is open. */
+/* Copy-paste co-op signalling panel — styled to match the in-game
+   warm-panel / gold-bevel dungeon UI rather than looking like a web form. */
 #coop-panel {
   position: absolute;
   inset: 0;
   display: none;
   align-items: center;
   justify-content: center;
-  background: rgba(5, 6, 10, 0.92);
-  padding: 24px;
+  background: radial-gradient(ellipse at center, rgba(20, 16, 12, 0.88) 0%, rgba(4, 5, 8, 0.96) 70%);
+  padding: 20px;
 }
 
 #coop-panel.open {
@@ -55,64 +56,151 @@ canvas {
 }
 
 .coop-card {
-  width: min(720px, 92vw);
-  max-height: 92vh;
+  width: min(660px, 94vw);
+  max-height: 94vh;
   overflow-y: auto;
-  border: 2px solid #2b4f52;
-  border-radius: 14px;
-  background: #0b1013;
-  padding: 20px 22px;
-  color: #d8f2f0;
+  border: 3px solid #6f5a3f;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #2e2519 0%, #241d14 100%);
+  box-shadow: inset 0 2px 0 rgba(255, 226, 168, 0.16), inset 0 -3px 0 rgba(0, 0, 0, 0.45), 0 18px 50px rgba(0, 0, 0, 0.75);
+  padding: 18px 22px 20px;
+  color: #f4efe6;
+}
+
+.coop-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  border-bottom: 2px solid #56452e;
+  padding-bottom: 10px;
+}
+
+.coop-gem {
+  color: #ffd23d;
+  font-size: 14px;
+  text-shadow: 0 0 8px rgba(255, 210, 61, 0.8);
 }
 
 .coop-card h2 {
-  margin: 0 0 4px;
-  font-size: 20px;
-  letter-spacing: 3px;
-  color: #6ee7d5;
+  margin: 0;
+  font-size: 21px;
+  letter-spacing: 5px;
+  color: #ffd23d;
+  text-shadow: 0 2px 0 rgba(0, 0, 0, 0.6);
 }
 
-.coop-card p {
-  margin: 6px 0 14px;
-  font-size: 12px;
-  line-height: 1.6;
-  color: #8fa3a6;
+.coop-sub {
+  margin: 10px 0 16px;
+  font-size: 11px;
+  text-align: center;
+  color: #a08f74;
+  letter-spacing: 1px;
+}
+
+.coop-lane {
+  border: 2px solid #4a3b28;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.22);
+  padding: 12px 14px 14px;
+}
+
+.coop-lane-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 11px;
+  letter-spacing: 2px;
+  color: #a08f74;
+  margin-bottom: 10px;
+}
+
+.coop-badge {
+  background: #3ddc73;
+  color: #10180f;
+  font-size: 10px;
+  font-weight: bold;
+  letter-spacing: 2px;
+  padding: 3px 9px;
+  border-radius: 4px;
+  box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.3);
+}
+
+.coop-badge.join {
+  background: #9fe6ff;
+  color: #0b1a20;
+}
+
+.coop-or {
+  position: relative;
+  text-align: center;
+  margin: 14px 0;
+}
+
+.coop-or::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: #4a3b28;
+}
+
+.coop-or span {
+  position: relative;
+  background: #292116;
+  padding: 0 14px;
+  font-size: 10px;
+  letter-spacing: 4px;
+  color: #7d6d55;
 }
 
 .coop-card textarea {
   width: 100%;
-  height: 92px;
+  height: 74px;
   resize: vertical;
-  background: #060a0c;
-  color: #b9e8e0;
-  border: 1px solid #2b4f52;
-  border-radius: 8px;
+  background: #14100c;
+  color: #ffe9a8;
+  border: 2px solid #4a3b28;
+  border-radius: 7px;
   padding: 8px 10px;
+  margin: 8px 0;
   font-family: inherit;
   font-size: 11px;
   word-break: break-all;
 }
 
+.coop-card textarea:focus {
+  outline: none;
+  border-color: #ffd23d;
+}
+
 .coop-btn {
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
   width: 100%;
-  margin: 10px 0;
-  padding: 12px 14px;
-  background: #0e1a1d;
-  border: 2px solid #6ee7d5;
+  padding: 11px 14px;
+  background: #3a2f20;
+  border: 2px solid #6f5a3f;
   border-radius: 8px;
-  color: #6ee7d5;
+  box-shadow: inset 0 2px 0 rgba(255, 226, 168, 0.14), inset 0 -3px 0 rgba(0, 0, 0, 0.4);
+  color: #ffe9a8;
   font-family: inherit;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: bold;
   letter-spacing: 2px;
   cursor: pointer;
-  transition: background 160ms ease-out, color 160ms ease-out;
+  transition: transform 140ms ease-out, background 140ms ease-out, color 140ms ease-out;
 }
 
-.coop-btn:hover:not(:disabled) {
-  background: #6ee7d5;
-  color: #06100f;
+.coop-btn.primary:hover:not(:disabled) {
+  background: #ffd23d;
+  border-color: #fff2b8;
+  color: #241d14;
+  transform: translateY(-1px);
 }
 
 .coop-btn:disabled {
@@ -120,25 +208,37 @@ canvas {
   cursor: not-allowed;
 }
 
+.coop-step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #ffd23d;
+  color: #241d14;
+  font-size: 11px;
+  flex: 0 0 auto;
+}
+
 .coop-btn.secondary {
-  border-color: #e0713d;
-  color: #e0713d;
+  margin-top: 14px;
+  border-color: #8a4436;
+  background: #3a221c;
+  color: #ff9a86;
 }
 
 .coop-btn.secondary:hover:not(:disabled) {
-  background: #e0713d;
-  color: #150806;
-}
-
-.coop-divider {
-  height: 1px;
-  background: #23383a;
-  margin: 18px 0;
+  background: #e04b3d;
+  color: #1a0b08;
+  transform: translateY(-1px);
 }
 
 .coop-status {
-  font-size: 12px;
+  font-size: 11px;
   color: #ffd23d;
-  min-height: 18px;
-  margin-top: 6px;
+  min-height: 20px;
+  margin-top: 12px;
+  text-align: center;
+  letter-spacing: 1px;
 }

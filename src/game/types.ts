@@ -44,6 +44,8 @@ export interface WeaponRoll {
 
 export type EnemyKind = 'runner' | 'fast' | 'tank' | 'spitter' | 'vampire' | 'explosive' | 'boss';
 
+export type CompanionSpecies = 'drone' | 'walker' | 'swarm' | 'wraith';
+
 export type RoomContent = 'start' | 'mysterybox' | 'workbench' | 'treasure' | 'empty';
 
 export type StationKind = 'mysterybox' | 'workbench' | 'treasure';
