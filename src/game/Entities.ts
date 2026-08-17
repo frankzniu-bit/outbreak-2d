@@ -172,6 +172,13 @@ export class Enemy {
   burnTick = 0;
   wobble = Math.random() * Math.PI * 2;
 
+  /** How long this body has been making no headway against geometry. */
+  stuckTimer = 0;
+  /** While positive, the enemy commits to sliding sideways to break free. */
+  unstickTimer = 0;
+  unstickX = 0;
+  unstickY = 0;
+
   rangedCooldown = 1.2;
   lifestealFrac = 0.35;
   armed = false;

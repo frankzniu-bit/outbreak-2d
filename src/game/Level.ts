@@ -334,8 +334,11 @@ export class Level {
    */
   wallsNear(x: number): Wall[] {
     const idx = this.roomIndexAt(x);
-    const lo = (idx - 1) * ROOM_W;
-    const hi = (idx + 2) * ROOM_W;
+    return this.wallsInRange((idx - 1) * ROOM_W, (idx + 2) * ROOM_W);
+  }
+
+  /** Every wall and closed door overlapping the horizontal span [lo, hi]. */
+  wallsInRange(lo: number, hi: number): Wall[] {
     const out: Wall[] = [];
     for (const w of this.walls) {
       if (w.x + w.w >= lo && w.x <= hi) out.push(w);

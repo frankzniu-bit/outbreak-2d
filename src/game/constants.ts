@@ -42,6 +42,10 @@ export const POWERUP_DURATION = 30;
 
 export const TILE = 50;
 
+// How often the shared enemy chase field is re-flooded from the players. Ten
+// times a second is well inside the distance an enemy can cover in one cell.
+export const NAV_REBUILD_INTERVAL = 0.1;
+
 // boss lunge tuning
 export const BOSS_LUNGE_SPEED = 720;
 export const BOSS_LUNGE_MAX = 340;

@@ -15,6 +15,7 @@ import {
 } from './Companions';
 import { CHARACTER_DEFS, CHARACTER_ORDER, type CharacterDef } from './Characters';
 import { pickEnemyKind, createEnemy, createBoss, BOSS_DEFS } from './Enemies';
+import { FlowField, type Vec2 } from './Pathfinding';
 import {
   WEAPON_DEFS,
   rollWeapon,
@@ -63,6 +64,8 @@ import {
 } from './types';
 import {
   WORLD_H,
+  ROOM_W,
+  NAV_REBUILD_INTERVAL,
   VIEW_W,
   VIEW_H,
   FIXED_DT,
@@ -203,6 +206,9 @@ export class Game {
   private companion: Companion | null = null;
   private turrets: Turret[] = [];
   private enemies: Enemy[] = [];
+  /** Shared chase field: one flood from the players serves every enemy. */
+  private navField = new FlowField();
+  private navTimer = 0;
   private projectiles: Projectile[] = [];
   private enemyProjectiles: EnemyProjectile[] = [];
   private pendingAirstrike: { x: number; y: number; timer: number } | null = null;
@@ -1156,6 +1162,7 @@ export class Game {
       const shots = this.companion.update(dt, host.x, host.y, this.enemies);
       if (shots.length) this.projectiles.push(...shots);
     }
+    this.updateNavField(dt);
     this.updateEnemies(dt);
     this.updateProjectiles(dt);
     this.updateEnemyProjectiles(dt);
@@ -2020,20 +2027,121 @@ export class Game {
     return best;
   }
 
-  private seekTarget(e: Enemy, target: Player, dt: number) {
+  /**
+   * The chase field is flooded outward from the players a few times a second and
+   * shared by every enemy, so pathing costs about the same whether one zombie is
+   * hunting you or forty.
+   */
+  private updateNavField(dt: number) {
+    this.navTimer -= dt;
+    if (this.navTimer > 0) return;
+    this.navTimer = NAV_REBUILD_INTERVAL;
+
+    const sources: Vec2[] = [];
+    let loRoom = Infinity;
+    let hiRoom = -Infinity;
+    for (const p of this.players) {
+      if (!p.alive) continue;
+      sources.push({ x: p.x, y: p.y });
+      const idx = this.level.roomIndexAt(p.x);
+      loRoom = Math.min(loRoom, idx);
+      hiRoom = Math.max(hiRoom, idx);
+    }
+    if (sources.length === 0) return;
+
+    // A room of slack either side, capped so a split co-op team can't grow the
+    // flood without bound. Anything outside the window falls back to direct
+    // steering, which is fine - it has no walls to negotiate at that range yet.
+    hiRoom = Math.min(hiRoom, loRoom + 2);
+    const lo = Math.max(0, (loRoom - 1) * ROOM_W);
+    const hi = Math.min(this.level.totalWidth(), (hiRoom + 2) * ROOM_W);
+    this.navField.build(this.level.wallsInRange(lo, hi), lo, hi - lo, sources);
+  }
+
+  /**
+   * Where an enemy should head to reach its target: straight at it when there's
+   * a clear lane, otherwise down the flow field. Chasing the straight line
+   * unconditionally is what used to leave packs pressed against the wrong side
+   * of a wall.
+   */
+  private chaseDirection(e: Enemy, target: Player): Vec2 {
+    if (e.unstickTimer > 0) return { x: e.unstickX, y: e.unstickY };
     const dx = target.x - e.x;
     const dy = target.y - e.y;
     const dist = Math.hypot(dx, dy) || 1;
+    const direct = { x: dx / dist, y: dy / dist };
+    if (this.navField.lineIsClear(e.x, e.y, target.x, target.y)) return direct;
+    return this.navField.directionAt(e.x, e.y) ?? direct;
+  }
+
+  /** Light crowd pressure so a pack doesn't fuse into one body in a doorway. */
+  private separation(e: Enemy): Vec2 {
+    let sx = 0;
+    let sy = 0;
+    for (const o of this.enemies) {
+      if (o === e || !o.alive) continue;
+      const dx = e.x - o.x;
+      const dy = e.y - o.y;
+      const range = (e.radius + o.radius) * 1.1;
+      const d2 = dx * dx + dy * dy;
+      if (d2 > range * range || d2 < 1e-4) continue;
+      const d = Math.sqrt(d2);
+      const push = 1 - d / range;
+      sx += (dx / d) * push;
+      sy += (dy / d) * push;
+    }
+    const len = Math.hypot(sx, sy);
+    if (len > 1) {
+      sx /= len;
+      sy /= len;
+    }
+    return { x: sx, y: sy };
+  }
+
+  /**
+   * Integrates one enemy step and watches for a body geometry is holding in
+   * place: when the resolved move keeps coming out far shorter than intended it
+   * commits to sliding sideways for a moment instead of grinding into the wall.
+   */
+  private moveEnemy(e: Enemy, vx: number, vy: number, dt: number) {
+    const startX = e.x;
+    const startY = e.y;
+    const res = resolveWallCollisions(e.x + vx * dt, e.y + vy * dt, e.radius, this.level.wallsNear(e.x));
+    e.x = res.x;
+    e.y = res.y;
+
+    if (e.unstickTimer > 0) e.unstickTimer -= dt;
+    const intended = Math.hypot(vx, vy) * dt;
+    if (intended < 1e-3) return;
+    const moved = Math.hypot(e.x - startX, e.y - startY);
+    if (moved < intended * 0.35) {
+      e.stuckTimer += dt;
+      if (e.stuckTimer > 0.25 && e.unstickTimer <= 0) {
+        const len = Math.hypot(vx, vy) || 1;
+        const side = Math.random() < 0.5 ? 1 : -1;
+        e.unstickX = (-vy / len) * side;
+        e.unstickY = (vx / len) * side;
+        e.unstickTimer = 0.45;
+        e.stuckTimer = 0;
+      }
+    } else {
+      e.stuckTimer = Math.max(0, e.stuckTimer - dt * 2);
+    }
+  }
+
+  private seekTarget(e: Enemy, target: Player, dt: number) {
+    const dir = this.chaseDirection(e, target);
+    // Bosses are far heavier than the trash around them, so crowd pressure
+    // would shove them off their approach.
+    const sep = e.kind === 'boss' ? { x: 0, y: 0 } : this.separation(e);
     const speed = e.speed * e.slowFactor;
-    let vx = (dx / dist) * speed;
-    let vy = (dy / dist) * speed;
+    let vx = (dir.x + sep.x * 0.9) * speed;
+    let vy = (dir.y + sep.y * 0.9) * speed;
     e.knockX *= 1 - 8 * dt;
     e.knockY *= 1 - 8 * dt;
     vx += e.knockX;
     vy += e.knockY;
-    const res = resolveWallCollisions(e.x + vx * dt, e.y + vy * dt, e.radius, this.level.wallsNear(e.x));
-    e.x = res.x;
-    e.y = res.y;
+    this.moveEnemy(e, vx, vy, dt);
   }
 
   private updateEnemies(dt: number) {
@@ -2123,28 +2231,31 @@ export class Game {
     const dx = target.x - e.x;
     const dy = target.y - e.y;
     const dist = Math.hypot(dx, dy) || 1;
+    const clearShot = this.navField.lineIsClear(e.x, e.y, target.x, target.y);
     let dirX = 0;
     let dirY = 0;
-    if (dist > 260) {
-      dirX = dx / dist;
-      dirY = dy / dist;
+    // With no clear shot the spitter is just a slow chaser, so it repositions
+    // along the path until it can actually see what it's spitting at.
+    if (dist > 260 || !clearShot) {
+      const dir = this.chaseDirection(e, target);
+      dirX = dir.x;
+      dirY = dir.y;
     } else if (dist < 150) {
       dirX = -dx / dist;
       dirY = -dy / dist;
     }
+    const sep = this.separation(e);
     const speed = e.speed * e.slowFactor;
-    let vx = dirX * speed;
-    let vy = dirY * speed;
+    let vx = (dirX + sep.x * 0.9) * speed;
+    let vy = (dirY + sep.y * 0.9) * speed;
     e.knockX *= 1 - 8 * dt;
     e.knockY *= 1 - 8 * dt;
     vx += e.knockX;
     vy += e.knockY;
-    const res = resolveWallCollisions(e.x + vx * dt, e.y + vy * dt, e.radius, this.level.wallsNear(e.x));
-    e.x = res.x;
-    e.y = res.y;
+    this.moveEnemy(e, vx, vy, dt);
 
     e.rangedCooldown -= dt;
-    if (dist < 420 && e.rangedCooldown <= 0) {
+    if (dist < 420 && clearShot && e.rangedCooldown <= 0) {
       e.rangedCooldown = 1.6;
       const angle = Math.atan2(dy, dx);
       this.enemyProjectiles.push({
@@ -2181,7 +2292,13 @@ export class Game {
         e.bossTimer -= dt;
         // A minimum approach window stops it re-winding the instant it lands,
         // which previously made it ping-pong over the player's head forever.
-        if (e.bossTimer <= 0 && Math.hypot(target.x - e.x, target.y - e.y) < 320) {
+        // Charging with a pillar in the way just parks it against the pillar,
+        // so it keeps walking the path until the lane is actually open.
+        if (
+          e.bossTimer <= 0 &&
+          Math.hypot(target.x - e.x, target.y - e.y) < 320 &&
+          this.navField.lineIsClear(e.x, e.y, target.x, target.y)
+        ) {
           e.bossState = 'windup';
           e.bossTimer = 0.8;
           this.sfx.bossRoar();
