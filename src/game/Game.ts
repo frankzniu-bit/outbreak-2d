@@ -104,16 +104,18 @@ interface PlayerInput {
   melee: boolean;
   reload: boolean;
   swap: boolean;
+  weapon1: boolean;
+  weapon2: boolean;
 }
 
-function emptyInput(): PlayerInput {
-  return {
-    mx: 0, my: 0, aim: 0,
-    fireHeld: false, firePressed: false,
-    dash: false, ability: false, ultimate: false,
-    interactHeld: false, interactPressed: false,
-    melee: false, reload: false, swap: false,
-  };
+/** One-shot actions travel over the wire as monotonic counters rather than
+ *  booleans - a boolean that flips true for a single frame is routinely lost
+ *  when several input packets land between two host ticks. */
+const EDGE_KEYS = ['fire', 'dash', 'ability', 'ultimate', 'interact', 'melee', 'reload', 'swap', 'w1', 'w2'] as const;
+type EdgeKey = (typeof EDGE_KEYS)[number];
+
+function zeroEdges(): Record<EdgeKey, number> {
+  return { fire: 0, dash: 0, ability: 0, ultimate: 0, interact: 0, melee: 0, reload: 0, swap: 0, w1: 0, w2: 0 };
 }
 
 export class Game {
@@ -146,7 +148,12 @@ export class Game {
   private guestReady = false;
   private awaitingHost = false;
   private snapshotAccum = 0;
-  private pendingRemoteInput: PlayerInput = emptyInput();
+  /** Latest held (level) state from the partner, plus a queue of unconsumed press events. */
+  private remoteHeld = { mx: 0, my: 0, aim: 0, fireHeld: false, interactHeld: false };
+  private remoteEdgeSeen: Record<EdgeKey, number> | null = null;
+  private remoteEdgePending = zeroEdges();
+  /** Guest-side outgoing press counters. */
+  private localEdges = zeroEdges();
   private netEvents: { x: number; y: number; c: string; n: number }[] = [];
 
   private players: Player[] = [];
@@ -235,13 +242,25 @@ export class Game {
       this.notice(`Partner ready as ${CHARACTER_DEFS[this.guestCharId]?.name ?? '?'}.`);
       if (this.scene === 'playing' && !this.players[1]) this.spawnRemotePlayer();
     } else if (t === 'in') {
-      this.pendingRemoteInput = {
+      this.remoteHeld = {
         mx: msg.mx as number, my: msg.my as number, aim: msg.aim as number,
-        fireHeld: !!msg.fh, firePressed: !!msg.fp,
-        dash: !!msg.d, ability: !!msg.a, ultimate: !!msg.u,
-        interactHeld: !!msg.ih, interactPressed: !!msg.ip,
-        melee: !!msg.m, reload: !!msg.r, swap: !!msg.s,
+        fireHeld: !!msg.fh, interactHeld: !!msg.ih,
       };
+      const counters = (msg.c ?? {}) as Record<string, number>;
+      // First packet just establishes the baseline, otherwise we'd replay the
+      // partner's entire press history in one tick.
+      if (!this.remoteEdgeSeen) {
+        this.remoteEdgeSeen = zeroEdges();
+        for (const k of EDGE_KEYS) this.remoteEdgeSeen[k] = counters[k] ?? 0;
+      } else {
+        for (const k of EDGE_KEYS) {
+          const now = counters[k] ?? 0;
+          const seen = this.remoteEdgeSeen[k];
+          // capped so a stall can't bank a dozen presses and dump them at once
+          if (now > seen) this.remoteEdgePending[k] = Math.min(4, this.remoteEdgePending[k] + (now - seen));
+          this.remoteEdgeSeen[k] = now;
+        }
+      }
     } else if (t === 'snap') {
       this.applySnapshot(msg);
     } else if (t === 'over') {
@@ -506,6 +525,42 @@ export class Game {
       melee: this.actionPressed('melee'),
       reload: this.actionPressed('reload'),
       swap: this.actionPressed('swapWeapon'),
+      weapon1: this.actionPressed('weapon1'),
+      weapon2: this.actionPressed('weapon2'),
+    };
+  }
+
+  /**
+   * Host-side: hand the partner's queued presses to the simulation one at a
+   * time. An edge is only spent when the action can actually happen this tick -
+   * spending a click while the gun is still on cooldown would silently discard
+   * it, which is what made remote players barely able to shoot.
+   */
+  private takeRemoteInput(): PlayerInput {
+    const p = this.players.find((pl) => pl.index !== this.localIndex);
+    const take = (k: EdgeKey, ready = true) => {
+      if (!ready || this.remoteEdgePending[k] <= 0) return false;
+      this.remoteEdgePending[k]--;
+      return true;
+    };
+    const weapon = p?.currentWeapon;
+    const canFire = !!p && p.active && !p.reloading && p.fireCooldown <= 0 && !!weapon && weapon.ammoInMag > 0;
+    return {
+      mx: this.remoteHeld.mx,
+      my: this.remoteHeld.my,
+      aim: this.remoteHeld.aim,
+      fireHeld: this.remoteHeld.fireHeld,
+      firePressed: take('fire', canFire),
+      dash: take('dash', !!p && p.dashCooldownTimer <= 0 && p.dashTime <= 0),
+      ability: take('ability', !!p && p.abilityCooldown <= 0),
+      ultimate: take('ultimate', !!p && p.ultimateUnlocked && p.ultimateCooldown <= 0),
+      interactHeld: this.remoteHeld.interactHeld,
+      interactPressed: take('interact'),
+      melee: take('melee', !!p && p.meleeCooldown <= 0),
+      reload: take('reload'),
+      swap: take('swap'),
+      weapon1: take('w1'),
+      weapon2: take('w2'),
     };
   }
 
@@ -517,10 +572,19 @@ export class Game {
       const worldMouseY = this.camera.y + this.input.mouseY;
       p.aimAngle = Math.atan2(worldMouseY - p.y, worldMouseX - p.x);
       const inp = this.buildLocalInput();
+      if (inp.firePressed) this.localEdges.fire++;
+      if (inp.dash) this.localEdges.dash++;
+      if (inp.ability) this.localEdges.ability++;
+      if (inp.ultimate) this.localEdges.ultimate++;
+      if (inp.interactPressed) this.localEdges.interact++;
+      if (inp.melee) this.localEdges.melee++;
+      if (inp.reload) this.localEdges.reload++;
+      if (inp.swap) this.localEdges.swap++;
+      if (inp.weapon1) this.localEdges.w1++;
+      if (inp.weapon2) this.localEdges.w2++;
       this.net.send({
         t: 'in', mx: +inp.mx.toFixed(2), my: +inp.my.toFixed(2), aim: +inp.aim.toFixed(2),
-        fh: inp.fireHeld, fp: inp.firePressed, d: inp.dash, a: inp.ability, u: inp.ultimate,
-        ih: inp.interactHeld, ip: inp.interactPressed, m: inp.melee, r: inp.reload, s: inp.swap,
+        fh: inp.fireHeld, ih: inp.interactHeld, c: this.localEdges,
       });
       this.camera.follow(p.x, p.y, VIEW_W, VIEW_H, this.level.totalWidth(), WORLD_H);
     }
@@ -661,6 +725,11 @@ export class Game {
     this.hitStopTimer = 0;
     this.paused = false;
     this.runBonusEssence = 0;
+    // start each run from a clean input-edge baseline on both ends of the link
+    this.localEdges = zeroEdges();
+    this.remoteEdgePending = zeroEdges();
+    this.remoteEdgeSeen = null;
+    this.remoteHeld = { mx: 0, my: 0, aim: 0, fireHeld: false, interactHeld: false };
     this.stats = { kills: 0, roundsSurvived: 0, points: 0 };
     this.scene = 'playing';
   }
@@ -967,18 +1036,11 @@ export class Game {
     this.updateRoundFlow(dt);
 
     const localInput = this.buildLocalInput();
+    const remoteInput = this.players.length > 1 ? this.takeRemoteInput() : null;
     for (const p of this.players) {
-      const inp = p.index === this.localIndex ? localInput : this.pendingRemoteInput;
-      this.updatePlayer(p, inp, dt);
+      const inp = p.index === this.localIndex ? localInput : remoteInput;
+      if (inp) this.updatePlayer(p, inp, dt);
     }
-    this.pendingRemoteInput.firePressed = false;
-    this.pendingRemoteInput.dash = false;
-    this.pendingRemoteInput.ability = false;
-    this.pendingRemoteInput.ultimate = false;
-    this.pendingRemoteInput.interactPressed = false;
-    this.pendingRemoteInput.melee = false;
-    this.pendingRemoteInput.reload = false;
-    this.pendingRemoteInput.swap = false;
 
     this.updateRevives(dt);
     this.updateStations();
@@ -1038,7 +1100,7 @@ export class Game {
       for (const other of this.players) {
         if (other === p || !other.active) continue;
         if (Math.hypot(other.x - p.x, other.y - p.y) > REVIVE_RANGE) continue;
-        const otherInput = other.index === this.localIndex ? this.actionDown('interact') : this.pendingRemoteInput.interactHeld;
+        const otherInput = other.index === this.localIndex ? this.actionDown('interact') : this.remoteHeld.interactHeld;
         if (!otherInput) continue;
         beingRevived = true;
         const rate = other.character.id === 'medic' ? 1.75 : 1;
@@ -1372,10 +1434,15 @@ export class Game {
         p.reloading = false;
       }
     }
-    if (inp.swap) {
-      p.currentWeaponIndex = (p.currentWeaponIndex + 1) % p.weapons.length;
+    let nextIndex = p.currentWeaponIndex;
+    if (inp.swap) nextIndex = (p.currentWeaponIndex + 1) % p.weapons.length;
+    else if (inp.weapon1 && p.weapons[0]) nextIndex = 0;
+    else if (inp.weapon2 && p.weapons[1]) nextIndex = 1;
+    if (nextIndex !== p.currentWeaponIndex) {
+      p.currentWeaponIndex = nextIndex;
       p.reloading = false;
       p.charging = false;
+      p.chargeTime = 0;
     }
   }
 

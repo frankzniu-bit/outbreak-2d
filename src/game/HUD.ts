@@ -360,9 +360,12 @@ export function drawHud(ctx: CanvasRenderingContext2D, player: Player, level: Le
   ctx.fillStyle = player.reloading ? '#ff9d2e' : '#f4efe6';
   const ammoMain = player.charging ? 'CHG' : player.reloading ? '···' : `${weapon.ammoInMag}`;
   ctx.fillText(ammoMain, cardX + 12, cardY + 64);
+  // measure while the big font is still active, otherwise the reserve creeps
+  // left and collides with the magazine count
+  const mainWidth = ctx.measureText(ammoMain).width;
   ctx.font = '13px monospace';
   ctx.fillStyle = '#8d97a5';
-  ctx.fillText(`/ ${weapon.ammoReserve}`, cardX + 12 + ctx.measureText(ammoMain).width + 26, cardY + 64);
+  ctx.fillText(`/ ${weapon.ammoReserve}`, cardX + 20 + mainWidth, cardY + 64);
 
   // circular reload / charge ring on the right of the card
   const ringX = cardX + cardW - 34;
