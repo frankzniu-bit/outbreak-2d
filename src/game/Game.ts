@@ -683,6 +683,10 @@ export class Game {
   private pickCharacter(idx: number) {
     const id = this.visibleCharacters()[idx];
     if (!id) return;
+    if (id === SECRET_CHARACTER && !this.secretIsRevealed()) {
+      this.notice(this.secretProgress());
+      return;
+    }
     const def = CHARACTER_DEFS[id];
     if (this.meta.classesUnlocked[id]) {
       this.selectedCharacterIndex = idx;
@@ -715,10 +719,31 @@ export class Game {
     this.beginNewRun(CHARACTER_DEFS[id]);
   }
 
-  /** Characters currently visible on the select screen (the secret one hides). */
+  /** True once the secret class's identity may be shown at all. */
+  private secretIsRevealed(): boolean {
+    return this.meta.classesUnlocked[SECRET_CHARACTER] || secretRevealed(this.meta, SKILL_NODES.map((n) => n.id));
+  }
+
+  /** What still stands between the player and revealing the secret class. */
+  private secretProgress(): string {
+    let classes = 0;
+    let ults = 0;
+    for (const id of CHARACTER_ORDER) {
+      if (id === SECRET_CHARACTER) continue;
+      if (!this.meta.classesUnlocked[id]) classes++;
+      if (!this.meta.ultimatesUnlocked[id]) ults++;
+    }
+    const skills = SKILL_NODES.filter((n) => !this.meta.skills.includes(n.id)).length;
+    const parts: string[] = [];
+    if (classes) parts.push(`${classes} class${classes > 1 ? 'es' : ''}`);
+    if (ults) parts.push(`${ults} ultimate${ults > 1 ? 's' : ''}`);
+    if (skills) parts.push(`${skills} skill${skills > 1 ? 's' : ''}`);
+    return parts.length ? `Still locked: ${parts.join(', ')} left to buy.` : 'Signal decoded.';
+  }
+
+  /** Every card is always on screen - the secret one just shows as an unknown. */
   private visibleCharacters(): CharacterId[] {
-    const revealed = this.meta.classesUnlocked[SECRET_CHARACTER] || secretRevealed(this.meta, SKILL_NODES.map((n) => n.id));
-    return CHARACTER_ORDER.filter((id) => id !== SECRET_CHARACTER || revealed);
+    return CHARACTER_ORDER;
   }
 
   private cardLayout() {
@@ -2529,6 +2554,7 @@ export class Game {
     ctx.restore();
 
     this.renderLighting();
+    this.renderThreatMarkers();
 
     if (this.nukeFlash > 0) {
       ctx.fillStyle = `rgba(200,255,220,${Math.min(0.75, this.nukeFlash)})`;
@@ -2565,6 +2591,10 @@ export class Game {
       boss: boss
         ? { hp: boss.hp, maxHp: boss.maxHp, name: BOSS_DEFS[boss.bossType].name + (boss.enraged ? ' — ENRAGED' : ''), color: BOSS_DEFS[boss.bossType].color }
         : null,
+      enemyPositions: this.enemies
+        .filter((e) => e.alive)
+        .slice(0, 60)
+        .map((e) => ({ x: e.x, y: e.y, boss: e.kind === 'boss' })),
       powerUps: [
         ...(this.instaKillTimer > 0 ? [{ label: POWERUP_LABELS.instakill, color: POWERUP_COLORS.instakill, secondsLeft: this.instaKillTimer }] : []),
         ...(this.doublePointsTimer > 0 ? [{ label: POWERUP_LABELS.doublepoints, color: POWERUP_COLORS.doublepoints, secondsLeft: this.doublePointsTimer }] : []),
@@ -3059,7 +3089,154 @@ export class Game {
     ctx.fillRect(0, 0, VIEW_W, VIEW_H);
   }
 
+  /**
+   * Drawn after the darkness pass so threats stay findable in a facility this
+   * large: a rim light on anything on-screen, and edge arrows for anything
+   * outside the viewport. The spotlight still hides the level itself - only the
+   * enemies are surfaced.
+   */
+  private renderThreatMarkers() {
+    const ctx = this.ctx;
+    const me = this.players[this.localIndex] ?? this.players[0];
+    if (!me) return;
+    const camX = this.camera.x - this.camera.offsetX;
+    const camY = this.camera.y - this.camera.offsetY;
+    const pulse = 0.55 + 0.2 * Math.sin(this.flickerPhase * 5);
+
+    const offscreen: { e: Enemy; dist: number }[] = [];
+
+    for (const e of this.enemies) {
+      if (!e.alive) continue;
+      const sx = e.x - camX;
+      const sy = e.y - camY;
+      const onScreen = sx > -40 && sx < VIEW_W + 40 && sy > -40 && sy < VIEW_H + 40;
+      const dist = Math.hypot(e.x - me.x, e.y - me.y);
+
+      if (!onScreen) {
+        offscreen.push({ e, dist });
+        continue;
+      }
+
+      const color = e.kind === 'boss' ? BOSS_DEFS[e.bossType].color : enemyColor(e.kind);
+      const isBoss = e.kind === 'boss';
+      ctx.save();
+      ctx.globalAlpha = isBoss ? 0.9 : pulse;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = isBoss ? 3 : 2;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = isBoss ? 16 : 9;
+      ctx.beginPath();
+      ctx.arc(sx, sy, e.radius + 3.5, 0, Math.PI * 2);
+      ctx.stroke();
+      // a small centre pip so distant enemies still read as "something is there"
+      ctx.globalAlpha = ctx.globalAlpha * 0.8;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(sx, sy, 2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      void dist;
+    }
+
+    // edge arrows, nearest first, capped so a big wave doesn't ring the screen
+    offscreen.sort((a, b) => a.dist - b.dist);
+    const cx = VIEW_W / 2;
+    const cy = VIEW_H / 2;
+    const marginX = VIEW_W / 2 - 30;
+    const marginY = VIEW_H / 2 - 30;
+    for (const { e, dist } of offscreen.slice(0, 14)) {
+      const dx = e.x - camX - cx;
+      const dy = e.y - camY - cy;
+      const scale = Math.min(marginX / (Math.abs(dx) || 1e-6), marginY / (Math.abs(dy) || 1e-6));
+      const ex = cx + dx * scale;
+      const ey = cy + dy * scale;
+      const angle = Math.atan2(dy, dx);
+      const color = e.kind === 'boss' ? BOSS_DEFS[e.bossType].color : enemyColor(e.kind);
+      const fade = Math.max(0.25, 1 - dist / 1800);
+      const size = e.kind === 'boss' ? 13 : 9;
+
+      ctx.save();
+      ctx.translate(ex, ey);
+      ctx.rotate(angle);
+      ctx.globalAlpha = fade;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 10;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(size, 0);
+      ctx.lineTo(-size * 0.7, size * 0.62);
+      ctx.lineTo(-size * 0.7, -size * 0.62);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
   // ---------------- menu chrome ----------------
+
+  /** A deliberately unreadable card: something is clearly there, but not what. */
+  private renderMysteryCard(x: number, y: number, w: number, h: number, selected: boolean) {
+    const ctx = this.ctx;
+    const pulse = (Math.sin(this.flickerPhase * 2.2) + 1) / 2;
+
+    drawPanel(ctx, x, y, w, h, '#05060a', selected ? '#c9b3ff' : 'rgba(160,140,220,0.28)', selected ? 2.5 : 1.5, 14);
+
+    // faint static, so the card feels like it's hiding something
+    ctx.save();
+    rrPath(ctx, x, y, w, h, 14);
+    ctx.clip();
+    ctx.fillStyle = 'rgba(201,179,255,0.06)';
+    for (let i = 0; i < 26; i++) {
+      const seed = i * 91.7 + Math.floor(this.flickerPhase * 3) * 13.3;
+      const sx = x + (Math.sin(seed) * 0.5 + 0.5) * w;
+      const sy = y + (Math.cos(seed * 1.9) * 0.5 + 0.5) * h;
+      ctx.fillRect(sx, sy, 10 + (i % 4) * 8, 2);
+    }
+    ctx.restore();
+
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 9px monospace';
+    ctx.fillStyle = '#5b5470';
+    ctx.fillText('UNKNOWN SIGNAL', x + w / 2, y + 20);
+
+    // silhouette
+    ctx.save();
+    ctx.globalAlpha = 0.55 + pulse * 0.25;
+    ctx.shadowColor = '#c9b3ff';
+    ctx.shadowBlur = 14 + pulse * 14;
+    ctx.fillStyle = '#0a0910';
+    ctx.beginPath();
+    ctx.arc(x + w / 2, y + 58, 26, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(201,179,255,0.5)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.restore();
+
+    ctx.fillStyle = '#c9b3ff';
+    ctx.font = 'bold 30px monospace';
+    ctx.fillText('?', x + w / 2, y + 68);
+
+    ctx.fillStyle = '#6b6480';
+    ctx.font = 'bold 17px monospace';
+    ctx.fillText('???', x + w / 2, y + 106);
+
+    ctx.font = 'bold 10px monospace';
+    ctx.fillStyle = '#4d4760';
+    ctx.fillText('♥ ???', x + w / 2 - 32, y + 124);
+    ctx.fillText('▲ ???', x + w / 2 + 32, y + 124);
+
+    ctx.font = '9px monospace';
+    ctx.fillStyle = '#4d4760';
+    wrapText(ctx, 'Something else survived down here. Buy out every class, ultimate and skill to decode it.', x + w / 2, y + 152, w - 22, 12);
+
+    ctx.font = 'bold 22px monospace';
+    ctx.fillStyle = `rgba(201,179,255,${0.45 + pulse * 0.4})`;
+    ctx.fillText('🔒', x + w / 2, y + h - 46);
+    ctx.font = 'bold 9px monospace';
+    ctx.fillStyle = '#5b5470';
+    ctx.fillText('LOCKED', x + w / 2, y + h - 22);
+  }
 
   private renderMenuBackground() {
     const ctx = this.ctx;
@@ -3116,6 +3293,13 @@ export class Game {
       const unlocked = this.meta.classesUnlocked[id];
       const ultOwned = this.meta.ultimatesUnlocked[id];
       const pulse = selected ? (Math.sin(this.flickerPhase * 4) + 1) / 2 : 0;
+
+      // The secret slot is always on the board, but shows as an unreadable
+      // signal until everything else has been bought.
+      if (id === SECRET_CHARACTER && !this.secretIsRevealed()) {
+        this.renderMysteryCard(x, y, cardW, cardH, selected);
+        return;
+      }
 
       drawPanel(ctx, x, y, cardW, cardH,
         selected ? 'rgba(255,255,255,0.09)' : 'rgba(255,255,255,0.035)',

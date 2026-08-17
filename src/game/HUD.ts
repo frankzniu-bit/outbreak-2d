@@ -23,6 +23,7 @@ export interface HudState {
   controlsHint: string;
   boss: { hp: number; maxHp: number; name: string; color: string } | null;
   powerUps: { label: string; color: string; secondsLeft: number }[];
+  enemyPositions: { x: number; y: number; boss: boolean }[];
   companion: { name: string; rarity: Rarity } | null;
   partner: HudPartner | null;
   muted: boolean;
@@ -279,6 +280,17 @@ export function drawHud(ctx: CanvasRenderingContext2D, player: Player, level: Le
       ctx.fillStyle = STATION_COLOR[station.kind] ?? '#e8e8ea';
       ctx.fillRect(bx + 4, by + 4, 6, 6);
     }
+    // enemy pips, positioned within the room box so you can read where they are
+    for (const en of hud.enemyPositions) {
+      if (Math.floor(en.x / ROOM_W) !== roomIdx) continue;
+      const ex = bx + 2 + ((en.x - roomIdx * ROOM_W) / ROOM_W) * (boxSize - 4);
+      const ey = by + 2 + (en.y / 1000) * (boxSize - 4);
+      ctx.fillStyle = en.boss ? '#ff3b2f' : '#e8455a';
+      ctx.beginPath();
+      ctx.arc(ex, ey, en.boss ? 2.6 : 1.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
     if (isCurrent) {
       ctx.fillStyle = player.character.color;
       ctx.beginPath();
