@@ -24,7 +24,7 @@ export interface HudState {
   boss: { hp: number; maxHp: number; name: string; color: string } | null;
   powerUps: { label: string; color: string; secondsLeft: number }[];
   enemyPositions: { x: number; y: number; boss: boolean }[];
-  companion: { name: string; rarity: Rarity } | null;
+  companions: { name: string; rarity: Rarity }[];
   partner: HudPartner | null;
   muted: boolean;
   netStatus: string | null;
@@ -433,12 +433,17 @@ export function drawHud(ctx: CanvasRenderingContext2D, player: Player, level: Le
   }
 
   // ---------- companion readout ----------
-  if (hud.companion) {
+  // Stacks upward so a full escort wing never pushes into the weapon card.
+  hud.companions.forEach((c, i) => {
     ctx.textAlign = 'right';
     ctx.font = 'bold 10px monospace';
-    ctx.fillStyle = rarityColor(hud.companion.rarity);
-    ctx.fillText(`${hud.companion.name.toUpperCase()} · ${hud.companion.rarity.toUpperCase()}`, cardX + cardW, cardY - 8);
-  }
+    ctx.fillStyle = rarityColor(c.rarity);
+    ctx.fillText(
+      `${c.name.toUpperCase()} · ${c.rarity.toUpperCase()}`,
+      cardX + cardW,
+      cardY - 8 - (hud.companions.length - 1 - i) * 13,
+    );
+  });
 
   if (hud.netStatus) {
     ctx.textAlign = 'right';

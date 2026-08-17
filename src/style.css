@@ -242,3 +242,100 @@ canvas {
   text-align: center;
   letter-spacing: 1px;
 }
+
+/* ---------- room-code co-op flow ---------- */
+
+.coop-room {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+  padding: 10px 14px;
+  border: 2px dashed #6f5a3f;
+  border-radius: 8px;
+  background: #14100c;
+}
+
+.coop-room-label {
+  font-size: 9px;
+  letter-spacing: 2px;
+  color: #7d6d55;
+}
+
+.coop-room-code {
+  flex: 1;
+  font-size: 30px;
+  font-weight: bold;
+  letter-spacing: 10px;
+  color: #ffd23d;
+  text-align: center;
+  text-shadow: 0 0 14px rgba(255, 210, 61, 0.45);
+}
+
+.coop-join {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.coop-code-input {
+  flex: 1;
+  min-width: 0;
+  background: #14100c;
+  color: #ffd23d;
+  border: 2px solid #4a3b28;
+  border-radius: 7px;
+  padding: 10px 12px;
+  font-family: inherit;
+  font-size: 20px;
+  font-weight: bold;
+  letter-spacing: 8px;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.coop-code-input:focus {
+  outline: none;
+  border-color: #ffd23d;
+}
+
+.coop-join .coop-btn {
+  width: auto;
+  flex: 0 0 120px;
+}
+
+.coop-btn.tiny {
+  width: auto;
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  font-size: 10px;
+  letter-spacing: 1px;
+}
+
+.coop-manual {
+  margin-top: 14px;
+  border-top: 1px solid #4a3b28;
+  padding-top: 10px;
+}
+
+.coop-manual > summary {
+  cursor: pointer;
+  font-size: 10px;
+  letter-spacing: 1px;
+  color: #7d6d55;
+}
+
+.coop-manual > summary:hover {
+  color: #ffd23d;
+}
+
+.coop-manual-note {
+  font-size: 10px;
+  line-height: 1.6;
+  color: #7d6d55;
+  margin: 10px 0 4px;
+}
+
+.coop-manual .coop-btn.secondary {
+  margin-top: 8px;
+}

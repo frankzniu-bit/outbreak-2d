@@ -14,7 +14,7 @@ import {
   type CompanionSave,
 } from './Companions';
 import { CHARACTER_DEFS, CHARACTER_ORDER, type CharacterDef } from './Characters';
-import { pickEnemyKind, createEnemy, createBoss, BOSS_DEFS } from './Enemies';
+import { pickEnemyKind, createEnemy, createBoss, BossBag, BOSS_DEFS } from './Enemies';
 import { FlowField, type Vec2 } from './Pathfinding';
 import {
   WEAPON_DEFS,
@@ -42,9 +42,15 @@ import {
   rollNewCompanion,
   companionSlots,
   nextSlotCost,
-  activeCompanion,
+  activeCompanions,
   secretRevealed,
   MAX_COMPANION_SLOTS,
+  BOX_HITS_REQUIRED,
+  BOX_UPGRADE_CHANCE,
+  BOX_TIER_DEFS,
+  BOX_TIER_ORDER,
+  nextBoxTier,
+  type BoxTier,
   type MetaState,
   type AudioSettings,
 } from './Meta';
@@ -61,6 +67,8 @@ import {
   type Rarity,
   type FieldUpgrade,
   type PowerUpKind,
+  type BossType,
+  type WeaponRoll,
 } from './types';
 import {
   WORLD_H,
@@ -107,11 +115,40 @@ interface RunStats {
   points: number;
 }
 
+/**
+ * A companion crate mid-ritual. It is paid for up front, then beaten open over
+ * several clicks; each swing can promote it to a better tier, so the tension
+ * lives in the hits rather than in a single instant reveal.
+ */
+interface BoxOpening {
+  tier: BoxTier;
+  hitsLeft: number;
+  /** Decaying impact shake, 0..1. */
+  shake: number;
+  phase: number;
+  /** Decaying flash used to sell a tier promotion. */
+  upgradeFlash: number;
+  reward: CompanionSave | null;
+}
+
+/** A weapon lying on the floor. Picking it up is always a deliberate act. */
+interface WeaponDrop {
+  x: number;
+  y: number;
+  roll: WeaponRoll;
+  life: number;
+  phase: number;
+}
+
+const WEAPON_DROP_LIFETIME = 75;
+const WEAPON_DROP_RADIUS = 46;
+
 interface SpawnTicket {
   x: number;
   y: number;
   delay: number;
   kind: EnemyKind;
+  bossType?: BossType;
 }
 
 /** One frame of intent for a player, from either the keyboard or the network. */
@@ -182,6 +219,10 @@ export class Game {
   private selectedCharacterIndex = 0;
   private listeningForAction: ActionId | null = null;
   private paused = false;
+  /** Where the controls screen returns to - the menu, or a paused run. */
+  private controlsReturn: Scene = 'select';
+  /** The crate currently being whacked open on the companions screen. */
+  private boxOpening: BoxOpening | null = null;
   private menuNotice = '';
   private menuNoticeTimer = 0;
 
@@ -203,7 +244,7 @@ export class Game {
   private netEvents: { x: number; y: number; c: string; n: number }[] = [];
 
   private players: Player[] = [];
-  private companion: Companion | null = null;
+  private companions: Companion[] = [];
   private turrets: Turret[] = [];
   private enemies: Enemy[] = [];
   /** Shared chase field: one flood from the players serves every enemy. */
@@ -225,6 +266,9 @@ export class Game {
   private upgradesBought = 0;
   private ammoBought = 0;
   private bossesDefeated = 0;
+  private bossBag = new BossBag();
+  /** Weapons a boss left behind, waiting to be picked up deliberately. */
+  private weaponDrops: WeaponDrop[] = [];
   private powerUps: PowerUp[] = [];
   private instaKillTimer = 0;
   private doublePointsTimer = 0;
@@ -351,11 +395,12 @@ export class Game {
       ep: this.enemyProjectiles.map((p) => ({ x: Math.round(p.x), y: Math.round(p.y), r: p.radius })),
       tu: this.turrets.map((t) => ({ x: Math.round(t.x), y: Math.round(t.y), s: +t.spin.toFixed(2) })),
       pu: this.powerUps.map((u) => ({ k: u.kind, x: Math.round(u.x), y: Math.round(u.y), l: +u.life.toFixed(1), ph: +u.phase.toFixed(2) })),
+      wd: this.weaponDrops.map((d) => ({ x: Math.round(d.x), y: Math.round(d.y), l: +d.life.toFixed(1), ph: +d.phase.toFixed(2), id: d.roll.weaponId, r: d.roll.rarity, pk: d.roll.perkLabel })),
       fx: { ik: +this.instaKillTimer.toFixed(1), dp: +this.doublePointsTimer.toFixed(1) },
-      cm: this.companion
-        ? { x: Math.round(this.companion.x), y: Math.round(this.companion.y), f: +this.companion.facing.toFixed(2),
-            ph: +this.companion.animPhase.toFixed(2), sv: this.companion.save }
-        : null,
+      cm: this.companions.map((c) => ({
+        x: Math.round(c.x), y: Math.round(c.y), f: +c.facing.toFixed(2),
+        ph: +c.animPhase.toFixed(2), sv: c.save,
+      })),
       lv: {
         rooms: this.level.rooms,
         doors: this.level.doors,
@@ -445,6 +490,10 @@ export class Game {
     this.powerUps = ((msg.pu as Record<string, unknown>[]) ?? []).map((d) => ({
       kind: d.k as PowerUpKind, x: d.x as number, y: d.y as number, life: d.l as number, phase: d.ph as number,
     }));
+    this.weaponDrops = ((msg.wd as Record<string, unknown>[]) ?? []).map((d) => ({
+      x: d.x as number, y: d.y as number, life: d.l as number, phase: d.ph as number,
+      roll: { weaponId: d.id as never, rarity: d.r as Rarity, perkLabel: d.pk as string, fireRateMult: 1, damageMult: 1 },
+    }));
     const fx = (msg.fx ?? {}) as Record<string, number>;
     this.instaKillTimer = fx.ik ?? 0;
     this.doublePointsTimer = fx.dp ?? 0;
@@ -452,18 +501,20 @@ export class Game {
       x: d.x as number, y: d.y as number, life: 1, fireCooldown: 0, damage: 0, range: 0, spin: d.s as number,
     }));
 
-    const cm = msg.cm as Record<string, unknown> | null;
-    if (cm) {
+    // older builds sent a single object here; an array is the current shape
+    const rawCm = msg.cm;
+    const cms = (Array.isArray(rawCm) ? rawCm : rawCm ? [rawCm] : []) as Record<string, unknown>[];
+    this.companions.length = cms.length;
+    cms.forEach((cm, i) => {
       const save = cm.sv as CompanionSave;
-      if (!this.companion) this.companion = new Companion(cm.x as number, cm.y as number, save);
-      this.companion.x = cm.x as number;
-      this.companion.y = cm.y as number;
-      this.companion.facing = cm.f as number;
-      this.companion.animPhase = cm.ph as number;
-      this.companion.save = save;
-    } else {
-      this.companion = null;
-    }
+      if (!this.companions[i]) this.companions[i] = new Companion(cm.x as number, cm.y as number, save);
+      const c = this.companions[i];
+      c.x = cm.x as number;
+      c.y = cm.y as number;
+      c.facing = cm.f as number;
+      c.animPhase = cm.ph as number;
+      c.save = save;
+    });
 
     const lv = msg.lv as Record<string, unknown>;
     this.level.hydrate(lv.rooms as RoomInfo[], lv.doors as DoorInfo[], lv.stations as Station[]);
@@ -542,10 +593,16 @@ export class Game {
     if (this.scene === 'controls') return this.updateControls();
     if (this.scene === 'results') return this.updateResults();
 
-    if (this.isGuest) return this.updateGuest(dt);
+    // Pausing is available to both ends of a co-op link. The host actually
+    // stops the simulation; a guest stops acting (the host keeps running), so
+    // either player can step away or go re-bind a key mid-run.
+    if (this.actionPressed('pause') || this.input.wasPressed('Escape')) {
+      this.paused = !this.paused;
+      this.sfx.points();
+    }
+    if (this.paused) return this.updatePauseMenu();
 
-    if (this.actionPressed('pause')) this.paused = !this.paused;
-    if (this.paused) return;
+    if (this.isGuest) return this.updateGuest(dt);
 
     if (this.hitStopTimer > 0) {
       this.hitStopTimer -= dt;
@@ -669,7 +726,7 @@ export class Game {
     if (this.input.wasPressed('ArrowLeft')) this.selectedCharacterIndex = (this.selectedCharacterIndex + visibleCount - 1) % visibleCount;
     if (this.input.wasPressed('ArrowRight')) this.selectedCharacterIndex = (this.selectedCharacterIndex + 1) % visibleCount;
     if (this.actionPressed('upgradesMenu')) this.scene = 'hub';
-    if (this.input.wasPressed('KeyC')) this.scene = 'controls';
+    if (this.input.wasPressed('KeyC')) this.openControls('select');
     if (this.input.wasPressed('KeyB')) this.scene = 'companions';
 
     if (this.input.wasMousePressed()) {
@@ -679,7 +736,7 @@ export class Game {
       if (btn === 'drop') this.pressDropIn();
       if (btn === 'upgrades') this.scene = 'hub';
       if (btn === 'pets') this.scene = 'companions';
-      if (btn === 'controls') this.scene = 'controls';
+      if (btn === 'controls') this.openControls('select');
       if (btn === 'coop') this.coopUI?.open();
     }
 
@@ -811,8 +868,14 @@ export class Game {
     this.localIndex = 0;
     if (this.isHost && this.guestReady) this.spawnRemotePlayer();
 
-    const activeSave = activeCompanion(this.meta);
-    this.companion = activeSave ? new Companion(90, WORLD_H / 2 + 50, activeSave) : null;
+    // Deployed companions fan out around the player so a full wing does not
+    // stack into one silhouette.
+    const deployed = activeCompanions(this.meta, this.effects.deployLimit);
+    this.companions = deployed.map((save, i) => {
+      const c = new Companion(90, WORLD_H / 2 + 50, save);
+      c.followAngleOffset = Math.PI * 0.75 + (i * Math.PI * 2) / Math.max(1, deployed.length);
+      return c;
+    });
     this.turrets = [];
     this.enemies = [];
     this.projectiles = [];
@@ -830,6 +893,8 @@ export class Game {
     this.upgradesBought = 0;
     this.ammoBought = 0;
     this.bossesDefeated = 0;
+    this.bossBag.reset();
+    this.weaponDrops = [];
     this.powerUps = [];
     this.instaKillTimer = 0;
     this.doublePointsTimer = 0;
@@ -846,7 +911,7 @@ export class Game {
   // ---------------- skill tree hub ----------------
 
   private skillNodeRect(col: number, row: number) {
-    return { x: 60 + col * 228, y: 168 + row * 104, w: 200, h: 72 };
+    return { x: 60 + col * 228, y: 150 + row * 92, w: 200, h: 68 };
   }
 
   private updateHub() {
@@ -905,7 +970,7 @@ export class Game {
     const x = VIEW_W - 304;
     const w = 268;
     const h = 44;
-    let y = 168;
+    let y = 150;
 
     const selId = this.visibleCharacters()[this.selectedCharacterIndex] ?? CHARACTER_ORDER[0];
     const selDef = CHARACTER_DEFS[selId];
@@ -954,6 +1019,10 @@ export class Game {
   }
 
   private updateCompanions() {
+    if (this.boxOpening) {
+      this.updateBoxOpening();
+      return;
+    }
     if (this.input.wasPressed('Escape')) {
       this.scene = 'select';
       return;
@@ -1024,20 +1093,42 @@ export class Game {
           return;
         }
         this.meta.companions = this.meta.companions.filter((c) => c.id !== pet.id);
-        if (this.meta.activeCompanionId === pet.id) this.meta.activeCompanionId = this.meta.companions[0].id;
+        this.meta.activeCompanionIds = this.meta.activeCompanionIds.filter((id) => id !== pet.id);
+        if (!this.meta.activeCompanionIds.length) this.meta.activeCompanionIds = [this.meta.companions[0].id];
         saveMeta(this.meta);
         this.notice(`Released ${companionName(pet)}.`);
         return;
       }
       if (inside(btns.select)) {
-        this.meta.activeCompanionId = pet.id;
-        saveMeta(this.meta);
-        this.sfx.points();
-        this.notice(`${companionName(pet)} deployed.`);
+        this.toggleDeploy(pet);
         return;
       }
       return;
     }
+  }
+
+  /**
+   * Deploying is a toggle now that several companions can be out at once. With
+   * the wing already full, the click replaces the oldest deployment rather
+   * than doing nothing - that keeps a single click meaningful at every limit.
+   */
+  private toggleDeploy(pet: CompanionSave) {
+    const ids = this.meta.activeCompanionIds;
+    const limit = Math.max(1, this.effects.deployLimit);
+    if (ids.includes(pet.id)) {
+      if (ids.length === 1) {
+        this.notice('At least one companion has to be deployed.');
+        return;
+      }
+      this.meta.activeCompanionIds = ids.filter((id) => id !== pet.id);
+      this.notice(`${companionName(pet)} recalled.`);
+    } else {
+      if (ids.length >= limit) ids.shift();
+      ids.push(pet.id);
+      this.notice(`${companionName(pet)} deployed (${ids.length}/${limit}).`);
+    }
+    saveMeta(this.meta);
+    this.sfx.points();
   }
 
   private pullCompanionBox() {
@@ -1050,14 +1141,310 @@ export class Game {
       this.notice(`The box costs ${cost} tokens (you have ${this.meta.tokens}).`);
       return;
     }
+    // Charged up front: the crate is yours the moment you pay, the clicks only
+    // decide how good it turns out to be.
     this.meta.tokens -= cost;
     this.meta.companionBoxPulls++;
-    const pet = rollNewCompanion();
-    this.meta.companions.push(pet);
-    if (!this.meta.activeCompanionId) this.meta.activeCompanionId = pet.id;
     saveMeta(this.meta);
+    this.boxOpening = {
+      tier: 'standard',
+      hitsLeft: BOX_HITS_REQUIRED,
+      shake: 0,
+      phase: 0,
+      upgradeFlash: 0,
+      reward: null,
+    };
+    this.sfx.points();
+  }
+
+  private boxCrateRect() {
+    return { x: VIEW_W / 2 - 150, y: 210, w: 300, h: 240 };
+  }
+
+  private boxClaimRect() {
+    return { x: VIEW_W / 2 - 130, y: 512, w: 260, h: 46 };
+  }
+
+  private updateBoxOpening() {
+    const box = this.boxOpening!;
+    box.phase += FIXED_DT;
+    box.shake = Math.max(0, box.shake - FIXED_DT * 4);
+    box.upgradeFlash = Math.max(0, box.upgradeFlash - FIXED_DT * 1.6);
+    if (box.reward) {
+      // one more click (anywhere) banks it
+      if (this.input.wasMousePressed() || this.input.wasPressed('Enter') || this.input.wasPressed('Space') || this.input.wasPressed('Escape')) {
+        this.boxOpening = null;
+      }
+      return;
+    }
+    const hit = this.input.wasMousePressed() || this.input.wasPressed('Space');
+    if (!hit) return;
+    this.hitBox(box);
+  }
+
+  private hitBox(box: BoxOpening) {
+    box.hitsLeft--;
+    box.shake = 1;
+    this.sfx.points();
+
+    // every swing gets its own shot at promoting the crate
+    const promoted = nextBoxTier(box.tier);
+    if (promoted && Math.random() < BOX_UPGRADE_CHANCE) {
+      box.tier = promoted;
+      box.upgradeFlash = 1;
+      this.sfx.rarityFanfare('epic');
+      this.notice(`The crate cracks open into a ${BOX_TIER_DEFS[promoted].label}!`);
+    }
+
+    if (box.hitsLeft > 0) return;
+
+    const pet = rollNewCompanion(box.tier);
+    this.meta.companions.push(pet);
+    // a brand-new companion only auto-deploys if nothing is deployed yet
+    if (!this.meta.activeCompanionIds.length) this.meta.activeCompanionIds = [pet.id];
+    saveMeta(this.meta);
+    box.reward = pet;
     this.sfx.rarityFanfare(pet.rarity);
-    this.notice(`${companionName(pet)} (${pet.rarity.toUpperCase()}) joined your roster!`);
+  }
+
+  /** The crate itself, drawn dented and cracked in proportion to the beating. */
+  private drawCrate(ctx: CanvasRenderingContext2D, cx: number, cy: number, box: BoxOpening, scale: number) {
+    const def = BOX_TIER_DEFS[box.tier];
+    const progress = 1 - box.hitsLeft / BOX_HITS_REQUIRED;
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.scale(scale, scale);
+
+    // glow grows as the crate takes damage
+    ctx.save();
+    ctx.globalAlpha = 0.07 + progress * 0.13 + box.upgradeFlash * 0.3;
+    ctx.fillStyle = def.color;
+    ctx.beginPath();
+    ctx.arc(0, 4, 74 + progress * 18, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    // body
+    ctx.fillStyle = '#1b212b';
+    ctx.strokeStyle = def.color;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.rect(-58, -40, 116, 84);
+    ctx.fill();
+    ctx.stroke();
+
+    // lid, lifting a little further with each hit
+    const lift = progress * 12;
+    ctx.fillStyle = '#242c38';
+    ctx.beginPath();
+    ctx.rect(-64, -54 - lift, 128, 20);
+    ctx.fill();
+    ctx.stroke();
+
+    // banded trim
+    ctx.fillStyle = def.color;
+    ctx.globalAlpha = 0.85;
+    ctx.fillRect(-58, -6, 116, 7);
+    ctx.fillRect(-7, -40, 14, 84);
+    ctx.globalAlpha = 1;
+
+    // lock plate
+    ctx.fillStyle = '#0d1014';
+    ctx.beginPath();
+    ctx.arc(0, 0, 13, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = def.color;
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+    ctx.fillStyle = def.color;
+    ctx.font = 'bold 13px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(`${box.hitsLeft}`, 0, 5);
+
+    // cracks: one more jagged split per landed hit
+    const hitsLanded = BOX_HITS_REQUIRED - box.hitsLeft;
+    ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+    ctx.lineWidth = 1.6;
+    for (let i = 0; i < hitsLanded; i++) {
+      const a = (i / BOX_HITS_REQUIRED) * Math.PI * 2 + 0.7;
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(a) * 14, Math.sin(a) * 10);
+      ctx.lineTo(Math.cos(a) * 34, Math.sin(a) * 24 + 4);
+      ctx.lineTo(Math.cos(a) * 52, Math.sin(a) * 34 - 3);
+      ctx.stroke();
+    }
+
+    // light spilling out of the seams once it is nearly open
+    if (progress > 0.5) {
+      ctx.save();
+      ctx.globalAlpha = (progress - 0.5) * 1.4;
+      ctx.fillStyle = def.color;
+      ctx.fillRect(-58, -36 - lift, 116, 4);
+      ctx.restore();
+    }
+
+    ctx.restore();
+  }
+
+  private renderBoxOpening() {
+    const ctx = this.ctx;
+    const box = this.boxOpening!;
+
+    ctx.fillStyle = 'rgba(5,6,10,0.88)';
+    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+
+    const def = BOX_TIER_DEFS[box.tier];
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 13px monospace';
+    ctx.fillStyle = def.color;
+    ctx.fillText(def.label, VIEW_W / 2, 130);
+
+    // tier ladder, so the upgrade chance is legible rather than mysterious
+    const tierIdx = BOX_TIER_ORDER.indexOf(box.tier);
+    BOX_TIER_ORDER.forEach((t, i) => {
+      const tx = VIEW_W / 2 - (BOX_TIER_ORDER.length - 1) * 34 + i * 68;
+      const tdef = BOX_TIER_DEFS[t];
+      ctx.beginPath();
+      ctx.arc(tx, 158, i === tierIdx ? 8 : 5, 0, Math.PI * 2);
+      ctx.fillStyle = i <= tierIdx ? tdef.color : '#2b2f38';
+      ctx.fill();
+    });
+
+    const crate = this.boxCrateRect();
+    const cx = crate.x + crate.w / 2 + (Math.random() - 0.5) * box.shake * 16;
+    const cy = crate.y + crate.h / 2 + (Math.random() - 0.5) * box.shake * 16;
+
+    if (!box.reward) {
+      const overCrate = this.input.mouseX >= crate.x && this.input.mouseX <= crate.x + crate.w
+        && this.input.mouseY >= crate.y && this.input.mouseY <= crate.y + crate.h;
+      ctx.save();
+      ctx.globalAlpha = overCrate ? 0.5 : 0.22;
+      ctx.strokeStyle = def.color;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([7, 9]);
+      ctx.lineDashOffset = -box.phase * 26;
+      ctx.beginPath();
+      ctx.arc(crate.x + crate.w / 2, crate.y + crate.h / 2, 128, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+
+      this.drawCrate(ctx, cx, cy, box, 1.55 + box.shake * 0.1);
+
+      ctx.textAlign = 'center';
+      ctx.font = 'bold 20px monospace';
+      ctx.fillStyle = '#f4efe6';
+      ctx.fillText(`${box.hitsLeft} MORE ${box.hitsLeft === 1 ? 'HIT' : 'HITS'}`, VIEW_W / 2, 486);
+      ctx.font = '12px monospace';
+      ctx.fillStyle = '#8d97a5';
+      ctx.fillText('CLICK THE CRATE — every hit can upgrade it to a better tier', VIEW_W / 2, 512);
+      ctx.font = '10px monospace';
+      ctx.fillStyle = '#5b6069';
+      ctx.fillText(`${Math.round(BOX_UPGRADE_CHANCE * 100)}% upgrade chance per hit${nextBoxTier(box.tier) ? '' : ' · already at the top tier'}`, VIEW_W / 2, 532);
+    } else {
+      const pet = box.reward;
+      const accent = rarityColor(pet.rarity);
+      drawPanel(ctx, VIEW_W / 2 - 200, 178, 400, 300, '#0c0f14', accent, 2.5, 16);
+      drawCompanion(ctx, pet.species, pet.level, pet.rarity, VIEW_W / 2, 268, Math.sin(box.phase) * 0.7, box.phase, 3.1);
+      ctx.textAlign = 'center';
+      ctx.font = 'bold 20px monospace';
+      ctx.fillStyle = accent;
+      ctx.fillText(companionName(pet), VIEW_W / 2, 372);
+      ctx.font = 'bold 12px monospace';
+      ctx.fillStyle = '#8d97a5';
+      ctx.fillText(`${pet.rarity.toUpperCase()} · TIER ${pet.level}/${COMPANION_LEVEL_CAP} · FROM A ${def.label}`, VIEW_W / 2, 396);
+      ctx.font = '10px monospace';
+      ctx.fillStyle = '#6b7078';
+      wrapText(ctx, SPECIES_DEFS[pet.species].blurb, VIEW_W / 2, 420, 340, 12);
+
+      const claim = this.boxClaimRect();
+      const hover = this.input.mouseX >= claim.x && this.input.mouseX <= claim.x + claim.w
+        && this.input.mouseY >= claim.y && this.input.mouseY <= claim.y + claim.h;
+      drawButton(ctx, claim.x, claim.y, claim.w, claim.h, 'ADD TO ROSTER', accent, hover, '#0a0c10', 14);
+    }
+
+    if (box.upgradeFlash > 0) {
+      ctx.save();
+      ctx.globalAlpha = box.upgradeFlash * 0.5;
+      ctx.fillStyle = def.color;
+      ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+      ctx.restore();
+    }
+    this.renderNotice();
+  }
+
+  // ---------------- pause menu ----------------
+
+  private openControls(from: Scene) {
+    this.controlsReturn = from;
+    this.listeningForAction = null;
+    this.scene = 'controls';
+  }
+
+  private pauseButtons() {
+    const w = 300;
+    const h = 46;
+    const x = VIEW_W / 2 - w / 2;
+    return [
+      { key: 'resume' as const, label: 'RESUME', color: '#3ddc73', x, y: 330, w, h },
+      { key: 'binds' as const, label: 'CONTROLS & KEYBINDS', color: '#5fb8ff', x, y: 388, w, h },
+      { key: 'mute' as const, label: this.settings.muted ? 'UNMUTE AUDIO' : 'MUTE AUDIO', color: '#a24ddc', x, y: 446, w, h },
+      { key: 'quit' as const, label: this.isGuest ? 'LEAVE RUN' : 'END RUN & BANK', color: '#e04b3d', x, y: 504, w, h },
+    ];
+  }
+
+  private updatePauseMenu() {
+    if (!this.input.wasMousePressed()) return;
+    const mx = this.input.mouseX;
+    const my = this.input.mouseY;
+    for (const b of this.pauseButtons()) {
+      if (mx < b.x || mx > b.x + b.w || my < b.y || my > b.y + b.h) continue;
+      if (b.key === 'resume') this.paused = false;
+      else if (b.key === 'binds') this.openControls('playing');
+      else if (b.key === 'mute') this.toggleMute();
+      else if (b.key === 'quit') {
+        this.paused = false;
+        // A guest owns no simulation, so there is nothing to bank - dropping
+        // the link is the only sane way out.
+        if (this.isGuest) {
+          this.net.close();
+          this.scene = 'select';
+        } else {
+          this.endRun();
+        }
+      }
+      return;
+    }
+  }
+
+  private renderPauseMenu() {
+    const ctx = this.ctx;
+    ctx.fillStyle = 'rgba(6,7,10,0.82)';
+    ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#f4efe6';
+    ctx.font = 'bold 42px monospace';
+    ctx.fillText('PAUSED', VIEW_W / 2, 250);
+    ctx.font = '12px monospace';
+    ctx.fillStyle = '#8d97a5';
+    ctx.fillText(
+      this.isGuest
+        ? 'Co-op: the host keeps running — you have simply stopped acting.'
+        : `Round ${this.round} · ${formatKeyCode(this.keybinds.pause)} or Esc to resume`,
+      VIEW_W / 2, 280,
+    );
+
+    const mx = this.input.mouseX;
+    const my = this.input.mouseY;
+    for (const b of this.pauseButtons()) {
+      const hover = mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h;
+      drawButton(ctx, b.x, b.y, b.w, b.h, b.label, b.color, hover, '#0a0c10', 14);
+    }
+
+    ctx.textAlign = 'center';
+    ctx.font = '10px monospace';
+    ctx.fillStyle = '#5b6069';
+    ctx.fillText('rebinding a key takes effect immediately — the run resumes exactly where you left it', VIEW_W / 2, 572);
   }
 
   // ---------------- controls / audio settings ----------------
@@ -1079,7 +1466,7 @@ export class Game {
     }
 
     if (this.input.wasPressed('Escape')) {
-      this.scene = 'select';
+      this.scene = this.controlsReturn;
       return;
     }
     if (!this.input.wasMousePressed()) return;
@@ -1110,7 +1497,7 @@ export class Game {
       return;
     }
     if (mx >= VIEW_W / 2 + 10 && mx <= VIEW_W / 2 + 190 && my >= VIEW_H - 62 && my <= VIEW_H - 22) {
-      this.scene = 'select';
+      this.scene = this.controlsReturn;
       return;
     }
 
@@ -1154,12 +1541,13 @@ export class Game {
     this.updateRevives(dt);
     this.updateStations();
     this.updateTurrets(dt);
+    this.updateWeaponDrops(dt);
     this.updatePowerUps(dt);
 
     const anchor = this.players[this.localIndex] ?? this.players[0];
-    if (this.companion) {
+    for (const c of this.companions) {
       const host = this.players[0];
-      const shots = this.companion.update(dt, host.x, host.y, this.enemies);
+      const shots = c.update(dt, host.x, host.y, this.enemies);
       if (shots.length) this.projectiles.push(...shots);
     }
     this.updateNavField(dt);
@@ -1325,7 +1713,7 @@ export class Game {
       for (const s of this.enemiesToSpawn) s.delay -= dt;
       while (this.enemiesToSpawn.length && this.enemiesToSpawn[0].delay <= 0) {
         const s = this.enemiesToSpawn.shift()!;
-        if (s.kind === 'boss') this.enemies.push(createBoss(s.x, s.y, this.round, this.bossesDefeated));
+        if (s.kind === 'boss') this.enemies.push(createBoss(s.x, s.y, this.round, this.bossesDefeated, s.bossType ?? this.bossBag.next()));
         else this.enemies.push(createEnemy(s.x, s.y, s.kind as Exclude<EnemyKind, 'boss'>, this.round));
       }
       return;
@@ -1360,7 +1748,12 @@ export class Game {
     }
     if (isBossRound) {
       const bossPt = spawnPoints[spawnPoints.length - 1];
-      this.enemiesToSpawn.push({ x: bossPt.x, y: bossPt.y, delay: count * 0.3 + 0.6, kind: 'boss' });
+      const bossType = this.bossBag.next();
+      this.enemiesToSpawn.push({ x: bossPt.x, y: bossPt.y, delay: count * 0.3 + 0.6, kind: 'boss', bossType });
+      const herald = this.players[this.localIndex] ?? this.players[0];
+      if (herald) {
+        this.particles.floatText(herald.x, herald.y - 56, `${BOSS_DEFS[bossType].name} INBOUND`, BOSS_DEFS[bossType].color);
+      }
     }
     this.sfx.roundStart();
   }
@@ -1835,6 +2228,8 @@ export class Game {
   }
 
   private handleInteract(p: Player) {
+    if (this.tryPickUpWeapon(p)) return;
+
     const doorIdx = this.level.nearestClosedDoor(p.x, p.y);
     if (doorIdx !== null && this.level.distToDoor(doorIdx, p.x, p.y) < 90) {
       const cost = this.level.doors[doorIdx].cost;
@@ -1917,6 +2312,56 @@ export class Game {
       this.camera.shake(4, 0.2);
       this.sfx.rarityFanfare(p.currentWeapon.roll.rarity);
     }
+  }
+
+  // ---------------- dropped weapons ----------------
+
+  private nearestWeaponDrop(p: Player): WeaponDrop | null {
+    let best: WeaponDrop | null = null;
+    let bestDist = WEAPON_DROP_RADIUS;
+    for (const d of this.weaponDrops) {
+      const dist = Math.hypot(p.x - d.x, p.y - d.y);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = d;
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Swaps the drop into the slot the player is *currently holding* only when
+   * both slots are full - otherwise it fills the empty slot and leaves the
+   * equipped gun alone. Either way it takes a button press, never a walk-over.
+   */
+  private tryPickUpWeapon(p: Player): boolean {
+    const drop = this.nearestWeaponDrop(p);
+    if (!drop) return false;
+    const replacing = p.weapons.length >= 2 ? p.currentWeapon.roll : null;
+    const heldIndex = p.currentWeaponIndex;
+    p.addWeapon(drop.roll);
+    // addWeapon equips whatever it just added; keep the player on the gun they
+    // were already holding when it only filled an empty slot.
+    if (!replacing) p.currentWeaponIndex = heldIndex;
+    this.weaponDrops = this.weaponDrops.filter((d) => d !== drop);
+    const color = rarityColor(drop.roll.rarity);
+    this.particles.burst(drop.x, drop.y, color, 22, 200);
+    this.pushEvent(drop.x, drop.y, color, 22);
+    this.particles.floatText(
+      p.x, p.y - 40,
+      replacing ? `SWAPPED FOR ${WEAPON_DEFS[drop.roll.weaponId].name.toUpperCase()}` : `PICKED UP ${WEAPON_DEFS[drop.roll.weaponId].name.toUpperCase()}`,
+      color,
+    );
+    this.sfx.rarityFanfare(drop.roll.rarity);
+    return true;
+  }
+
+  private updateWeaponDrops(dt: number) {
+    for (const d of this.weaponDrops) {
+      d.life -= dt;
+      d.phase += dt;
+    }
+    this.weaponDrops = this.weaponDrops.filter((d) => d.life > 0);
   }
 
   // ---------------- power-ups ----------------
@@ -2625,9 +3070,10 @@ export class Game {
     this.runBonusEssence += 60;
     let roll = rollWeapon(MYSTERY_BOX_POOL);
     while (RARITY_ORDER.indexOf(roll.rarity) < 2) roll = upgradeWeaponRoll(roll);
-    const p = this.players[0];
-    p.addWeapon(roll);
-    this.particles.floatText(p.x, p.y - 40, `BOSS DOWN — ${WEAPON_DEFS[roll.weaponId].name.toUpperCase()}`, rarityColor(roll.rarity));
+    // The gun is dropped rather than handed over: yanking the player's weapon
+    // out of their hands mid-fight was never what they wanted.
+    this.weaponDrops.push({ x: e.x, y: e.y, roll, life: WEAPON_DROP_LIFETIME, phase: 0 });
+    this.particles.floatText(e.x, e.y - 40, `BOSS DOWN — ${WEAPON_DEFS[roll.weaponId].name.toUpperCase()} DROPPED`, rarityColor(roll.rarity));
     this.sfx.rarityFanfare('legendary');
     // bosses always leave something behind
     this.maybeDropPowerUp(e.x, e.y, true);
@@ -2654,14 +3100,14 @@ export class Game {
     this.renderFloor();
     this.level.draw(ctx);
     this.renderStations();
+    this.renderWeaponDrops();
     this.renderPowerUps();
     this.renderAirstrikeMarker();
     this.renderEnemyProjectiles();
     this.renderProjectiles();
     this.renderTurrets();
     this.renderEnemies();
-    if (this.companion) {
-      const c = this.companion;
+    for (const c of this.companions) {
       drawCompanion(ctx, c.species, c.level, c.rarity, c.x, c.y, c.facing, c.animPhase);
     }
     for (const p of this.players) this.renderPlayer(p);
@@ -2680,17 +3126,7 @@ export class Game {
 
     drawHud(ctx, this.players[this.localIndex] ?? this.players[0], this.level, this.getHudState());
 
-    if (this.paused) {
-      ctx.fillStyle = 'rgba(6,7,10,0.74)';
-      ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-      ctx.textAlign = 'center';
-      ctx.fillStyle = '#f4efe6';
-      ctx.font = 'bold 38px monospace';
-      ctx.fillText('PAUSED', VIEW_W / 2, VIEW_H / 2 - 10);
-      ctx.font = '13px monospace';
-      ctx.fillStyle = '#8d97a5';
-      ctx.fillText(`${formatKeyCode(this.keybinds.pause)} to resume · ${formatKeyCode(this.keybinds.mute)} to mute`, VIEW_W / 2, VIEW_H / 2 + 20);
-    }
+    if (this.paused) this.renderPauseMenu();
   }
 
   private getHudState(): HudState {
@@ -2716,7 +3152,7 @@ export class Game {
         ...(this.instaKillTimer > 0 ? [{ label: POWERUP_LABELS.instakill, color: POWERUP_COLORS.instakill, secondsLeft: this.instaKillTimer }] : []),
         ...(this.doublePointsTimer > 0 ? [{ label: POWERUP_LABELS.doublepoints, color: POWERUP_COLORS.doublepoints, secondsLeft: this.doublePointsTimer }] : []),
       ],
-      companion: this.companion ? { name: this.companion.name, rarity: this.companion.rarity } : null,
+      companions: this.companions.map((c) => ({ name: c.name, rarity: c.rarity })),
       partner: partnerPlayer
         ? {
             name: partnerPlayer.character.name,
@@ -2889,6 +3325,53 @@ export class Game {
         ctx.font = '11px monospace';
         ctx.textAlign = 'center';
         ctx.fillText('walk over to collect', s.x, s.y - 28);
+      }
+    }
+  }
+
+  private renderWeaponDrops() {
+    const ctx = this.ctx;
+    const local = this.players[this.localIndex] ?? this.players[0];
+    for (const d of this.weaponDrops) {
+      const color = rarityColor(d.roll.rarity);
+      const bob = Math.sin(d.phase * 3) * 3;
+      const alpha = d.life < 5 ? 0.35 + 0.65 * Math.abs(Math.sin(d.phase * 10)) : 1;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.translate(d.x, d.y + bob);
+
+      // ground halo
+      ctx.globalAlpha = alpha * 0.22;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.ellipse(0, 12 - bob, 22, 7, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = alpha;
+
+      // crate silhouette with the gun sitting on top of it
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 14;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.fillStyle = 'rgba(14,17,22,0.9)';
+      ctx.beginPath();
+      ctx.rect(-15, -4, 30, 14);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = color;
+      ctx.fillRect(-12, -9, 20, 4);
+      ctx.fillRect(2, -13, 4, 5);
+      ctx.restore();
+
+      const near = local && Math.hypot(local.x - d.x, local.y - d.y) < WEAPON_DROP_RADIUS;
+      ctx.textAlign = 'center';
+      ctx.fillStyle = color;
+      ctx.font = 'bold 10px monospace';
+      ctx.fillText(`${WEAPON_DEFS[d.roll.weaponId].name.toUpperCase()} · ${d.roll.rarity.toUpperCase()}`, d.x, d.y - 22);
+      if (near) {
+        ctx.fillStyle = '#f4efe6';
+        ctx.font = '10px monospace';
+        ctx.fillText(`${formatKeyCode(this.keybinds.interact)} to take`, d.x, d.y - 34);
       }
     }
   }
@@ -3525,7 +4008,7 @@ export class Game {
       ctx.fillStyle = BRANCH_COLOR[node.branch];
       ctx.font = 'bold 12px monospace';
       ctx.textAlign = 'center';
-      ctx.fillText(BRANCH_LABEL[node.branch], r.x + r.w / 2, r.y - 16);
+      ctx.fillText(BRANCH_LABEL[node.branch], r.x + r.w / 2, r.y - 14);
     }
 
     // connectors first so nodes sit on top
@@ -3572,10 +4055,10 @@ export class Game {
       ctx.font = 'bold 11px monospace';
       if (owned) {
         ctx.fillStyle = accent;
-        ctx.fillText('✓ OWNED', r.x + r.w - 12, r.y + 62);
+        ctx.fillText('✓ OWNED', r.x + r.w - 12, r.y + 60);
       } else {
         ctx.fillStyle = affordable ? '#ffd23d' : '#5b6069';
-        ctx.fillText(`◆ ${node.cost}`, r.x + r.w - 12, r.y + 62);
+        ctx.fillText(`◆ ${node.cost}`, r.x + r.w - 12, r.y + 60);
       }
     }
 
@@ -3583,7 +4066,7 @@ export class Game {
     ctx.textAlign = 'left';
     ctx.font = 'bold 11px monospace';
     ctx.fillStyle = '#8d97a5';
-    ctx.fillText('LOADOUT', VIEW_W - 304, 152);
+    ctx.fillText('LOADOUT', VIEW_W - 304, 134);
     for (const row of this.railRows()) {
       const hover = mx >= row.x && mx <= row.x + row.w && my >= row.y && my <= row.y + row.h;
       drawPanel(ctx, row.x, row.y, row.w, row.h,
@@ -3634,7 +4117,7 @@ export class Game {
       const card = this.companionCardRect(i);
       const unlocked = i < slots;
       const pet = unlocked ? this.meta.companions[i] : undefined;
-      const isActive = pet && pet.id === this.meta.activeCompanionId;
+      const isActive = !!pet && this.meta.activeCompanionIds.includes(pet.id);
       const accent = pet ? rarityColor(pet.rarity) : '#4d5259';
 
       drawPanel(ctx, card.x, card.y, card.w, card.h,
@@ -3709,8 +4192,11 @@ export class Game {
         evolveCost !== null && this.meta.tokens >= evolveCost ? '#3ddc73' : '#3a4048',
         inside(btns.evolve), '#0a0c10', 11);
       drawButton(ctx, btns.remove.x, btns.remove.y, btns.remove.w, btns.remove.h, 'RELEASE', '#e04b3d', inside(btns.remove), '#0a0c10', 11);
+      const deployIdx = this.meta.activeCompanionIds.indexOf(pet.id);
+      const roomLeft = this.meta.activeCompanionIds.length < this.effects.deployLimit;
       drawButton(ctx, btns.select.x, btns.select.y, btns.select.w, btns.select.h,
-        isActive ? '★ DEPLOYED' : 'DEPLOY', isActive ? accent : '#3d9bdc', inside(btns.select), '#0a0c10', 12);
+        isActive ? `★ DEPLOYED ${deployIdx + 1}/${this.effects.deployLimit}` : roomLeft ? 'DEPLOY' : 'SWAP IN',
+        isActive ? accent : '#3d9bdc', inside(btns.select), '#0a0c10', 12);
     }
 
     const boxCost = companionBoxCost(this.meta.companionBoxPulls);
@@ -3725,10 +4211,20 @@ export class Game {
     ctx.font = '10px monospace';
     ctx.fillStyle = '#5b6069';
     ctx.fillText(
-      `${this.meta.companions.length}/${slots} slots used · each pull rolls a new species and rarity · evolving raises tier and reshapes the sprite`,
+      `${this.meta.companions.length}/${slots} slots used · deploying ${this.meta.activeCompanionIds.length}/${this.effects.deployLimit} · evolving raises tier and reshapes the sprite`,
       VIEW_W / 2, 584,
     );
+    if (this.effects.deployLimit < 3) {
+      ctx.fillStyle = '#6b7078';
+      ctx.fillText(
+        this.effects.deployLimit === 1
+          ? 'Buy PACK BOND in the skill tree to field a second companion at once'
+          : 'Buy PACK MASTER in the skill tree to field a third companion at once',
+        VIEW_W / 2, 600,
+      );
+    }
     this.renderNotice();
+    if (this.boxOpening) this.renderBoxOpening();
   }
 
   private renderControls() {
@@ -3791,7 +4287,8 @@ export class Game {
 
     drawButton(ctx, VIEW_W / 2 - 190, VIEW_H - 62, 180, 40, 'RESET DEFAULTS', '#ff9d2e',
       mx >= VIEW_W / 2 - 190 && mx <= VIEW_W / 2 - 10 && my >= VIEW_H - 62 && my <= VIEW_H - 22, '#0a0c10', 12);
-    drawButton(ctx, VIEW_W / 2 + 10, VIEW_H - 62, 180, 40, 'BACK [Esc]', '#e04b3d',
+    drawButton(ctx, VIEW_W / 2 + 10, VIEW_H - 62, 180, 40,
+      this.controlsReturn === 'playing' ? 'BACK TO RUN' : 'BACK [Esc]', '#e04b3d',
       mx >= VIEW_W / 2 + 10 && mx <= VIEW_W / 2 + 190 && my >= VIEW_H - 62 && my <= VIEW_H - 22, '#0a0c10', 12);
     this.renderNotice();
   }

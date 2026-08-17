@@ -71,12 +71,36 @@ export const BOSS_DEFS: Record<BossType, BossDef> = {
 export const BOSS_TYPES: BossType[] = ['brute', 'titan', 'hive', 'screamer'];
 
 /**
- * Boss rounds roll a random archetype. `defeated` is how many bosses the run
- * has already put down, so every subsequent boss is meaningfully tougher than
- * the last regardless of which type shows up.
+ * Boss archetypes are drawn from a shuffled bag rather than rolled fresh each
+ * time. Picking independently at random meant a run that only ever sees two or
+ * three bosses routinely showed the same one twice and never surfaced half the
+ * roster; a bag guarantees all four appear before any repeats.
  */
-export function createBoss(x: number, y: number, round: number, defeated: number): Enemy {
-  const type = BOSS_TYPES[Math.floor(Math.random() * BOSS_TYPES.length)];
+export class BossBag {
+  private bag: BossType[] = [];
+
+  reset() {
+    this.bag = [];
+  }
+
+  next(): BossType {
+    if (!this.bag.length) {
+      this.bag = [...BOSS_TYPES];
+      for (let i = this.bag.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [this.bag[i], this.bag[j]] = [this.bag[j], this.bag[i]];
+      }
+    }
+    return this.bag.pop()!;
+  }
+}
+
+/**
+ * `defeated` is how many bosses the run has already put down, so every
+ * subsequent boss is meaningfully tougher than the last regardless of which
+ * type shows up.
+ */
+export function createBoss(x: number, y: number, round: number, defeated: number, type: BossType): Enemy {
   const def = BOSS_DEFS[type];
   const escalation = 1 + defeated * 0.4;
   const baseHp = 32 + round * 6;

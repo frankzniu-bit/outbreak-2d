@@ -49,6 +49,10 @@ export const SKILL_NODES: SkillNode[] = [
   { id: 'gain1', label: 'Bounty Hunter', desc: '+15% points from kills', branch: 'fortune', col: 3, row: 1, cost: 240, requires: ['pts1'] },
   { id: 'vault', label: 'Vault Cracker', desc: 'Treasure caches pay double', branch: 'fortune', col: 3, row: 2, cost: 300, requires: ['pts1'] },
   { id: 'tokens', label: 'Salvager', desc: '+30% tokens earned per run', branch: 'fortune', col: 3, row: 3, cost: 460, requires: ['gain1'] },
+
+  // --- capstones: the only way to field more than one companion at a time ---
+  { id: 'packbond1', label: 'Pack Bond', desc: 'Deploy a 2nd companion alongside the first', branch: 'fortune', col: 2, row: 4, cost: 2400, requires: ['tokens'] },
+  { id: 'packbond2', label: 'Pack Master', desc: 'Deploy a 3rd companion — a full escort wing', branch: 'fortune', col: 3, row: 4, cost: 5200, requires: ['packbond1'] },
 ];
 
 export interface SkillEffects {
@@ -67,6 +71,8 @@ export interface SkillEffects {
   pointGainMult: number;
   treasureMult: number;
   tokenMult: number;
+  /** How many companions may be deployed at once. */
+  deployLimit: number;
 }
 
 export function computeEffects(owned: string[]): SkillEffects {
@@ -86,6 +92,7 @@ export function computeEffects(owned: string[]): SkillEffects {
     pointGainMult: 1 + (has('gain1') ? 0.15 : 0),
     treasureMult: has('vault') ? 2 : 1,
     tokenMult: 1 + (has('tokens') ? 0.3 : 0),
+    deployLimit: 1 + (has('packbond1') ? 1 : 0) + (has('packbond2') ? 1 : 0),
   };
 }
 

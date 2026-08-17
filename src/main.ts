@@ -13,24 +13,40 @@ app.innerHTML = `
           <h2>CO-OP LINK</h2>
           <span class="coop-gem">◆</span>
         </div>
-        <p class="coop-sub">Two survivors, one facility. No server — just swap two codes.</p>
+        <p class="coop-sub">Two survivors, one facility. One room code — that's it.</p>
 
         <div class="coop-lane">
           <div class="coop-lane-head"><span class="coop-badge">HOST</span> start the run</div>
-          <button class="coop-btn primary" id="coop-create"><span class="coop-step">1</span> CREATE INVITE</button>
-          <textarea id="coop-out" readonly placeholder="your code appears here — send it to your partner"></textarea>
-          <button class="coop-btn primary" id="coop-accept"><span class="coop-step">3</span> ACCEPT REPLY</button>
+          <button class="coop-btn primary" id="coop-host">CREATE ROOM</button>
+          <div class="coop-room" id="coop-room" hidden>
+            <span class="coop-room-label">ROOM CODE</span>
+            <span class="coop-room-code" id="coop-room-code">-----</span>
+            <button class="coop-btn tiny" id="coop-copy">COPY</button>
+          </div>
         </div>
 
         <div class="coop-or"><span>OR</span></div>
 
         <div class="coop-lane">
           <div class="coop-lane-head"><span class="coop-badge join">JOIN</span> drop into their run</div>
-          <textarea id="coop-in" placeholder="paste the code you were sent here"></textarea>
-          <button class="coop-btn primary" id="coop-answer"><span class="coop-step">2</span> ANSWER INVITE</button>
+          <div class="coop-join">
+            <input id="coop-code" class="coop-code-input" maxlength="7" placeholder="ROOM CODE" autocomplete="off" spellcheck="false" />
+            <button class="coop-btn primary" id="coop-join">JOIN</button>
+          </div>
         </div>
 
         <div class="coop-status" id="coop-status"></div>
+
+        <details class="coop-manual" id="coop-manual">
+          <summary>Relay blocked? Use the manual code exchange</summary>
+          <p class="coop-manual-note">Only needed when the matchmaking relay can't be reached. Host presses 1, sends the code; joiner pastes it, presses 2 and sends the reply back; host pastes that and presses 3.</p>
+          <button class="coop-btn secondary" id="coop-create"><span class="coop-step">1</span> CREATE INVITE</button>
+          <textarea id="coop-out" readonly placeholder="your code appears here — send it to your partner"></textarea>
+          <textarea id="coop-in" placeholder="paste the code you were sent here"></textarea>
+          <button class="coop-btn secondary" id="coop-answer"><span class="coop-step">2</span> ANSWER INVITE</button>
+          <button class="coop-btn secondary" id="coop-accept"><span class="coop-step">3</span> ACCEPT REPLY</button>
+        </details>
+
         <button class="coop-btn secondary" id="coop-close">CLOSE</button>
       </div>
     </div>
