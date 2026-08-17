@@ -17,6 +17,8 @@ export interface HudState {
   round: number;
   depth: number;
   enemiesRemaining: number;
+  /** Wave size when it started, for the clear-progress bar. */
+  waveTotal: number;
   killStreak: number;
   intermissionTimer: number;
   tutorialTimer: number;
@@ -208,19 +210,60 @@ export function drawHud(ctx: CanvasRenderingContext2D, player: Player, level: Le
 
   ctx.font = '12px monospace';
   ctx.fillStyle = '#a4adb8';
-  const enemyLabel = hud.intermissionTimer > 0 ? 'NEXT WAVE INCOMING' : `${hud.enemiesRemaining} REMAINING`;
-  ctx.fillText(`${enemyLabel}   ·   DEPTH ${hud.depth}`, VIEW_W / 2, 52);
+  ctx.fillText(`DEPTH ${hud.depth}`, VIEW_W / 2, 52);
+
+  // ---------- wave clear tracker ----------
+  // How many kills stand between you and the end of the wave, which was
+  // previously buried in the same grey line as the depth readout.
+  const wbW = 300;
+  const wbX = VIEW_W / 2 - wbW / 2;
+  const wbY = 60;
+  const wbH = 18;
+  const intermission = hud.intermissionTimer > 0;
+  const total = Math.max(1, hud.waveTotal);
+  const cleared = Math.max(0, total - hud.enemiesRemaining);
+
+  ctx.fillStyle = 'rgba(20,16,12,0.86)';
+  rr(ctx, wbX, wbY, wbW, wbH, 5);
+  ctx.fill();
+  if (!intermission) {
+    // fills left to right as the wave is cleared, and runs hot at the end
+    const frac = Math.max(0, Math.min(1, cleared / total));
+    const nearlyDone = hud.enemiesRemaining <= Math.max(1, Math.round(total * 0.2));
+    ctx.fillStyle = nearlyDone ? '#ffb038' : '#e8455a';
+    if (frac > 0) {
+      rr(ctx, wbX + 1.5, wbY + 1.5, Math.max(3, (wbW - 3) * frac), wbH - 3, 4);
+      ctx.fill();
+    }
+  }
+  ctx.strokeStyle = '#6f5a3f';
+  ctx.lineWidth = 1.5;
+  rr(ctx, wbX, wbY, wbW, wbH, 5);
+  ctx.stroke();
+
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 12px monospace';
+  ctx.fillStyle = '#f4efe6';
+  ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+  ctx.lineWidth = 3;
+  const waveLabel = intermission
+    ? `NEXT WAVE IN ${Math.ceil(hud.intermissionTimer)}s`
+    : hud.enemiesRemaining <= 0
+      ? 'WAVE CLEAR'
+      : `${hud.enemiesRemaining} LEFT   ·   ${cleared}/${total} DOWN`;
+  ctx.strokeText(waveLabel, VIEW_W / 2, wbY + 13);
+  ctx.fillText(waveLabel, VIEW_W / 2, wbY + 13);
 
   if (hud.killStreak >= 3) {
     ctx.fillStyle = '#ffb038';
     ctx.font = 'bold 13px monospace';
-    ctx.fillText(`${hud.killStreak}x STREAK`, VIEW_W / 2, 70);
+    ctx.fillText(`${hud.killStreak}x STREAK`, VIEW_W / 2, hud.boss ? wbY + 74 : wbY + 34);
   }
 
   if (hud.boss) {
     const bw = 360;
     const bx = VIEW_W / 2 - bw / 2;
-    const by = 80;
+    const by = 104;
     ctx.fillStyle = '#1a1410';
     rr(ctx, bx, by, bw, 12, 4);
     ctx.fill();

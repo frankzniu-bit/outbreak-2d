@@ -418,6 +418,7 @@ export class Game {
       h: {
         rd: this.round, dp: this.level.depth(),
         er: this.enemies.filter((e) => e.alive).length + this.enemiesToSpawn.length,
+        wt: this.waveTotal,
         ks: this.killStreak, it: +this.intermissionTimer.toFixed(1), tt: +this.tutorialTimer.toFixed(1),
         mb: this.mysteryBox.cost,
       },
@@ -534,6 +535,7 @@ export class Game {
     this.intermissionTimer = h.it;
     this.tutorialTimer = h.tt;
     this.remoteEnemiesRemaining = h.er;
+    this.remoteWaveTotal = h.wt ?? h.er;
     this.remoteBoxCost = h.mb;
 
     for (const ev of (msg.ev as { x: number; y: number; c: string; n: number }[]) ?? []) {
@@ -542,6 +544,13 @@ export class Game {
   }
 
   private remoteEnemiesRemaining = 0;
+  private remoteWaveTotal = 0;
+  /**
+   * Enemies the wave started with, so the HUD can show progress rather than a
+   * bare count. Bosses summon mid-wave, so this grows if the tally ever exceeds
+   * it - the bar should never read as more than full.
+   */
+  private waveTotal = 0;
   private remoteBoxCost = 400;
 
   private pushEvent(x: number, y: number, color: string, count: number) {
@@ -1897,6 +1906,7 @@ export class Game {
         this.particles.floatText(herald.x, herald.y - 56, `${BOSS_DEFS[bossType].name} INBOUND`, BOSS_DEFS[bossType].color);
       }
     }
+    this.waveTotal = this.enemiesToSpawn.length;
     this.sfx.roundStart();
   }
 
@@ -3316,6 +3326,10 @@ export class Game {
       round: this.round,
       depth: this.level.depth(),
       enemiesRemaining: this.isGuest ? this.remoteEnemiesRemaining : this.enemies.filter((e) => e.alive).length + this.enemiesToSpawn.length,
+      waveTotal: Math.max(
+        this.isGuest ? this.remoteWaveTotal : this.waveTotal,
+        this.isGuest ? this.remoteEnemiesRemaining : this.enemies.filter((e) => e.alive).length + this.enemiesToSpawn.length,
+      ),
       killStreak: this.killStreak,
       intermissionTimer: this.intermissionTimer,
       tutorialTimer: this.tutorialTimer,
