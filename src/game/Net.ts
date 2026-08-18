@@ -9,7 +9,16 @@
  * host candidates alone are enough.
  */
 
-import { SignalRoom, makeRoomCode, normalizeRoomCode } from './Signal';
+import type { SignalRoom } from './Signal';
+
+/**
+ * The signalling client is pulled in only when a lobby is actually opened. That
+ * keeps the relay host out of the portal build's bundle entirely instead of
+ * leaving it there as an unreachable string.
+ */
+function signal() {
+  return import('./Signal');
+}
 
 const RTC_CONFIG: RTCConfiguration = {
   iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
@@ -128,6 +137,7 @@ export class NetLink {
    */
   async hostRoom(onCode: (code: string) => void, timeoutMs = 180000): Promise<void> {
     this.close();
+    const { SignalRoom, makeRoomCode } = await signal();
     const code = makeRoomCode();
     const room = new SignalRoom(code);
     this.room = room;
@@ -144,6 +154,7 @@ export class NetLink {
   /** Joiner side: read the offer off the room and publish the answer back. */
   async joinRoom(code: string, timeoutMs = 45000): Promise<void> {
     this.close();
+    const { SignalRoom, normalizeRoomCode } = await signal();
     const room = new SignalRoom(normalizeRoomCode(code));
     this.room = room;
     await room.open();

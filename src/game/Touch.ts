@@ -1,4 +1,5 @@
 import { VIEW_W } from './constants';
+import { drawIcon, drawPadButton, type IconName } from './Icons';
 
 /**
  * Touch is a first-class input here, not a mouse emulation: phones have no
@@ -25,7 +26,7 @@ interface Stick {
 
 export interface TouchButton {
   action: TouchAction;
-  label: string;
+  icon: IconName;
   x: number;
   y: number;
   r: number;
@@ -87,14 +88,14 @@ export class TouchControls {
    */
   buttons(): TouchButton[] {
     return [
-      { action: 'interact', label: 'USE', x: 1198, y: 432, r: 40, color: '#ffd23d' },
-      { action: 'dash', label: 'DASH', x: 1096, y: 506, r: 38, color: '#5fb8ff' },
-      { action: 'melee', label: 'HIT', x: 1204, y: 550, r: 34, color: '#ff8a7a' },
-      { action: 'reload', label: 'RELD', x: 1090, y: 396, r: 30, color: '#c3ccd8' },
-      { action: 'ability', label: 'ABIL', x: 1214, y: 324, r: 34, color: '#a24ddc' },
-      { action: 'ultimate', label: 'ULT', x: 1110, y: 292, r: 30, color: '#ff5b4a' },
-      { action: 'swap', label: 'SWAP', x: 1006, y: 342, r: 28, color: '#6ee7d5' },
-      { action: 'pause', label: '❚❚', x: 274, y: 38, r: 28, color: '#8d97a5' },
+      { action: 'interact', icon: 'hand', x: 1198, y: 432, r: 40, color: '#ffd23d' },
+      { action: 'dash', icon: 'boot', x: 1096, y: 506, r: 38, color: '#5fb8ff' },
+      { action: 'melee', icon: 'sword', x: 1204, y: 550, r: 34, color: '#ff8a7a' },
+      { action: 'reload', icon: 'reload', x: 1090, y: 396, r: 30, color: '#c3ccd8' },
+      { action: 'ability', icon: 'spark', x: 1214, y: 324, r: 34, color: '#a24ddc' },
+      { action: 'ultimate', icon: 'star', x: 1110, y: 292, r: 30, color: '#ff5b4a' },
+      { action: 'swap', icon: 'swap', x: 1006, y: 342, r: 28, color: '#6ee7d5' },
+      { action: 'pause', icon: 'menu', x: 274, y: 38, r: 28, color: '#8d97a5' },
     ];
   }
 
@@ -239,43 +240,34 @@ export class TouchControls {
     this.drawStick(ctx, this.aim, '#ff5b4a');
     for (const b of this.buttons()) {
       const down = this.held.has(b.action);
-      ctx.globalAlpha = down ? 0.95 : 0.5;
-      ctx.fillStyle = down ? b.color : 'rgba(20,16,12,0.72)';
-      ctx.beginPath();
-      ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = b.color;
-      ctx.lineWidth = 2.5;
-      ctx.stroke();
-      ctx.globalAlpha = down ? 1 : 0.85;
-      ctx.fillStyle = down ? '#0a0c10' : b.color;
-      ctx.font = `bold ${b.r < 30 ? 10 : 11}px monospace`;
-      ctx.textAlign = 'center';
-      ctx.fillText(b.label, b.x, b.y + 4);
+      drawPadButton(ctx, b.x, b.y, b.r, b.color, down);
+      drawIcon(ctx, b.icon, b.x, b.y + (down ? 1 : 0), b.r * 1.05, down ? '#fff8e6' : '#12100c');
     }
     ctx.restore();
   }
 
   private drawStick(ctx: CanvasRenderingContext2D, stick: Stick, color: string) {
     if (stick.id === null) return;
-    ctx.globalAlpha = 0.28;
+    // recessed well
+    ctx.globalAlpha = 0.34;
     ctx.fillStyle = '#0a0c10';
     ctx.beginPath();
     ctx.arc(stick.originX, stick.originY, STICK_RADIUS, 0, Math.PI * 2);
     ctx.fill();
-    ctx.globalAlpha = 0.6;
+    ctx.globalAlpha = 0.5;
     ctx.strokeStyle = color;
-    ctx.lineWidth = 2.5;
+    ctx.lineWidth = 3;
     ctx.stroke();
+    ctx.globalAlpha = 1;
 
     const v = this.vector(stick);
-    const knobX = stick.originX + v.x * v.mag * STICK_RADIUS;
-    const knobY = stick.originY + v.y * v.mag * STICK_RADIUS;
-    ctx.globalAlpha = 0.9;
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.arc(knobX, knobY, 26, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.globalAlpha = 1;
+    drawPadButton(
+      ctx,
+      stick.originX + v.x * v.mag * STICK_RADIUS,
+      stick.originY + v.y * v.mag * STICK_RADIUS,
+      27,
+      color,
+      false,
+    );
   }
 }

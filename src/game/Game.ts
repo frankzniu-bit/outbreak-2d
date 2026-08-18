@@ -59,7 +59,7 @@ import { SKILL_NODES, BRANCH_COLOR, BRANCH_LABEL, computeEffects, isUnlockable, 
 // note: SKILL_NODES doubles as the "everything bought" checklist for the secret class
 import { DEFAULT_BINDINGS, ACTION_ORDER, ACTION_LABELS, loadBindings, saveBindings, formatKeyCode, type ActionId } from './Keybinds';
 import { NetLink } from './Net';
-import { CoopUI } from './CoopUI';
+import type { CoopUI } from './CoopUI';
 import {
   RARITY_ORDER,
   SECRET_CHARACTER,
@@ -156,6 +156,8 @@ interface SpawnTicket {
 }
 
 /** One frame of intent for a player, from either the keyboard or the network. */
+type SelectButtonKey = 'drop' | 'upgrades' | 'pets' | 'controls' | 'coop';
+
 interface PlayerInput {
   mx: number;
   my: number;
@@ -329,7 +331,14 @@ export class Game {
   // ---------------- networking ----------------
 
   private setupNet() {
-    this.coopUI = new CoopUI(this.net, () => {});
+    // Loaded on demand so the portal build drops the lobby, the signalling
+    // client and its relay URL entirely rather than shipping them as dead code
+    // - a submission reviewer greps the bundle for outbound hosts.
+    if (!__PORTAL_BUILD__) {
+      void import('./CoopUI').then(({ CoopUI }) => {
+        this.coopUI = new CoopUI(this.net, () => {});
+      });
+    }
     this.net.onOpen = () => {
       this.coopUI?.notifyConnected();
       this.notice(this.net.role === 'host' ? 'Partner connected — you are the host.' : 'Connected to host.');
@@ -863,19 +872,27 @@ export class Game {
     return -1;
   }
 
+  /** Co-op is absent from the portal build, so the row is built from this list. */
+  private selectKeys(): SelectButtonKey[] {
+    const keys: SelectButtonKey[] = ['drop', 'upgrades', 'pets', 'controls'];
+    if (!__PORTAL_BUILD__) keys.push('coop');
+    return keys;
+  }
+
   private selectButtonLayout() {
     const btnW = 172;
     const btnH = 50;
     const gap = 13;
-    const totalW = btnW * 5 + gap * 4;
+    const n = this.selectKeys().length;
+    const totalW = btnW * n + gap * (n - 1);
     return { btnW, btnH, gap, startX: VIEW_W / 2 - totalW / 2, y: 486 };
   }
 
-  private hitTestSelectButtons(mx: number, my: number): 'drop' | 'upgrades' | 'pets' | 'controls' | 'coop' | null {
+  private hitTestSelectButtons(mx: number, my: number): SelectButtonKey | null {
     const { btnW, btnH, gap, startX, y } = this.selectButtonLayout();
     if (my < y || my > y + btnH) return null;
-    const keys: ('drop' | 'upgrades' | 'pets' | 'controls' | 'coop')[] = ['drop', 'upgrades', 'pets', 'controls', 'coop'];
-    for (let i = 0; i < 5; i++) {
+    const keys = this.selectKeys();
+    for (let i = 0; i < keys.length; i++) {
       const bx = startX + i * (btnW + gap);
       if (mx >= bx && mx <= bx + btnW) return keys[i];
     }
@@ -1544,6 +1561,20 @@ export class Game {
   // ---------------- pause menu ----------------
 
   private pauseLayout() {
+    // A phone has no keyboard, so the binding grid is dead weight there: the
+    // touch menu is the same panel with only what a thumb can act on.
+    if (this.touch.active) {
+      const panelW = 620;
+      const panelX = VIEW_W / 2 - panelW / 2;
+      return {
+        panelX,
+        panelY: 96,
+        panelW,
+        panelH: VIEW_H - 192,
+        strip: this.audioStrip(panelX + 48, 210, 300),
+        rows: [] as ReturnType<typeof Game.prototype.keybindRows>,
+      };
+    }
     const panelW = 1000;
     const panelX = VIEW_W / 2 - panelW / 2;
     return {
@@ -1557,6 +1588,15 @@ export class Game {
   }
 
   private pauseButtons() {
+    if (this.touch.active) {
+      const w = 300;
+      const h = 62;
+      const x = VIEW_W / 2 - w / 2;
+      return [
+        { key: 'resume' as const, label: 'RESUME', color: '#3ddc73', x, y: 320, w, h },
+        { key: 'quit' as const, label: this.isGuest ? 'LEAVE RUN' : 'END RUN & BANK', color: '#e04b3d', x, y: 400, w, h },
+      ];
+    }
     const w = 220;
     const h = 44;
     const y = VIEW_H - 108;
@@ -1629,11 +1669,13 @@ export class Game {
     ctx.fillText('AUDIO', layout.strip.muteX, layout.strip.muteY - 10);
     this.drawAudioStrip(layout.strip);
 
-    ctx.textAlign = 'left';
-    ctx.font = 'bold 12px monospace';
-    ctx.fillStyle = '#ffd23d';
-    ctx.fillText('KEYBINDS', layout.rows[0].x, layout.rows[0].y - 12);
-    this.drawKeybindRows(layout.rows);
+    if (layout.rows.length > 0) {
+      ctx.textAlign = 'left';
+      ctx.font = 'bold 12px monospace';
+      ctx.fillStyle = '#ffd23d';
+      ctx.fillText('KEYBINDS', layout.rows[0].x, layout.rows[0].y - 12);
+      this.drawKeybindRows(layout.rows);
+    }
 
     const mx = this.input.mouseX;
     const my = this.input.mouseY;
@@ -1646,9 +1688,11 @@ export class Game {
     ctx.font = '10px monospace';
     ctx.fillStyle = '#5b6069';
     ctx.fillText(
-      this.listeningForAction
-        ? 'Press any key to bind… (Esc cancels)'
-        : 'click a row then press a key — changes apply immediately and the run resumes where you left it',
+      this.touch.active
+        ? 'tap the menu button any time — the run waits exactly where you left it'
+        : this.listeningForAction
+          ? 'Press any key to bind… (Esc cancels)'
+          : 'click a row then press a key — changes apply immediately and the run resumes where you left it',
       VIEW_W / 2, VIEW_H - 56,
     );
     this.renderNotice();
@@ -4209,11 +4253,18 @@ export class Game {
     const my = this.input.mouseY;
     const hov = (bx: number) => mx >= bx && mx <= bx + btnW && my >= by && my <= by + btnH;
     const dropLabel = this.isGuest ? (this.awaitingHost ? 'WAITING…' : 'READY UP') : 'DROP IN';
-    drawButton(ctx, bsx, by, btnW, btnH, dropLabel, '#3ddc73', hov(bsx), '#0a0c10', 13);
-    drawButton(ctx, bsx + btnW + bg, by, btnW, btnH, 'SKILLS [U]', '#3d9bdc', hov(bsx + btnW + bg), '#0a0c10', 13);
-    drawButton(ctx, bsx + (btnW + bg) * 2, by, btnW, btnH, 'COMPANIONS [B]', '#9fe6ff', hov(bsx + (btnW + bg) * 2), '#0a0c10', 12);
-    drawButton(ctx, bsx + (btnW + bg) * 3, by, btnW, btnH, 'CONTROLS [C]', '#a24ddc', hov(bsx + (btnW + bg) * 3), '#0a0c10', 13);
-    drawButton(ctx, bsx + (btnW + bg) * 4, by, btnW, btnH, this.net.connected ? 'CO-OP ✓' : 'CO-OP', this.net.connected ? '#6ee7d5' : '#e0713d', hov(bsx + (btnW + bg) * 4), '#0a0c10', 13);
+    const faces: Record<SelectButtonKey, { label: string; color: string; size: number }> = {
+      drop: { label: dropLabel, color: '#3ddc73', size: 13 },
+      upgrades: { label: this.touch.active ? 'SKILLS' : 'SKILLS [U]', color: '#3d9bdc', size: 13 },
+      pets: { label: this.touch.active ? 'COMPANIONS' : 'COMPANIONS [B]', color: '#9fe6ff', size: 12 },
+      controls: { label: this.touch.active ? 'AUDIO' : 'CONTROLS [C]', color: '#a24ddc', size: 13 },
+      coop: { label: this.net.connected ? 'CO-OP ✓' : 'CO-OP', color: this.net.connected ? '#6ee7d5' : '#e0713d', size: 13 },
+    };
+    this.selectKeys().forEach((key, i) => {
+      const bx = bsx + i * (btnW + bg);
+      const f = faces[key];
+      drawButton(ctx, bx, by, btnW, btnH, f.label, f.color, hov(bx), '#0a0c10', f.size);
+    });
 
     ctx.fillStyle = '#5b6069';
     ctx.font = '11px monospace';

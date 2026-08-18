@@ -3,9 +3,9 @@ import { Game } from './game/Game';
 import { VIEW_W, VIEW_H } from './game/constants';
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
-app.innerHTML = `
-  <div id="game-root">
-    <canvas id="game-canvas"></canvas>
+
+/** Co-op lobby markup, omitted entirely from the portal build. */
+const COOP_PANEL_HTML = `
     <div id="coop-panel">
       <div class="coop-card">
         <div class="coop-banner">
@@ -50,6 +50,12 @@ app.innerHTML = `
         <button class="coop-btn secondary" id="coop-close">CLOSE</button>
       </div>
     </div>
+`;
+
+app.innerHTML = `
+  <div id="game-root">
+    <canvas id="game-canvas"></canvas>
+    ${__PORTAL_BUILD__ ? '' : COOP_PANEL_HTML}
   </div>
 `;
 
