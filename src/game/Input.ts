@@ -48,6 +48,16 @@ export class Input {
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
   }
 
+  /**
+   * Drives the canvas-drawn menus from a touch. A tap has no hover, so the
+   * pointer is moved and clicked in the same frame.
+   */
+  injectClick(x: number, y: number) {
+    this.mouseX = x;
+    this.mouseY = y;
+    this.mousePressed = true;
+  }
+
   isDown(code: string): boolean {
     return this.keysDown.has(code);
   }

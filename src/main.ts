@@ -55,16 +55,35 @@ app.innerHTML = `
 
 const canvas = document.querySelector<HTMLCanvasElement>('#game-canvas')!;
 
+const isTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints ?? 0) > 0;
+
 /** Scale the canvas element to fill the viewport while preserving aspect ratio.
  *  Explicit pixel sizing (rather than object-fit) keeps getBoundingClientRect
- *  accurate so mouse-to-world coordinate mapping stays correct. */
+ *  accurate so pointer-to-world coordinate mapping stays correct.
+ *
+ *  On phones the visual viewport is the honest one: window.innerHeight ignores
+ *  the collapsing browser chrome, which would size the canvas past the bottom
+ *  of the screen and put the touch buttons out of reach. */
 function fitCanvas() {
-  const scale = Math.min(window.innerWidth / VIEW_W, window.innerHeight / VIEW_H);
+  const vw = window.visualViewport?.width ?? window.innerWidth;
+  const vh = window.visualViewport?.height ?? window.innerHeight;
+  const scale = Math.min(vw / VIEW_W, vh / VIEW_H);
   canvas.style.width = `${Math.floor(VIEW_W * scale)}px`;
   canvas.style.height = `${Math.floor(VIEW_H * scale)}px`;
+
+  // The game is 16:9 and needs the long edge: in portrait a phone would render
+  // it as a letterboxed strip too small to aim in, so ask for a turn instead.
+  document.body.classList.toggle('portrait-blocked', isTouch && vh > vw);
 }
 fitCanvas();
 window.addEventListener('resize', fitCanvas);
+window.addEventListener('orientationchange', () => setTimeout(fitCanvas, 120));
+window.visualViewport?.addEventListener('resize', fitCanvas);
+
+// Stop the page itself from panning, zooming or bouncing under the game.
+document.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+document.addEventListener('gesturestart', (e) => e.preventDefault());
+document.addEventListener('dblclick', (e) => e.preventDefault());
 
 const game = new Game(canvas);
 if (import.meta.env.DEV) (window as unknown as { __game: Game }).__game = game;

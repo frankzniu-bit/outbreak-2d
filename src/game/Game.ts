@@ -16,6 +16,7 @@ import {
 import { CHARACTER_DEFS, CHARACTER_ORDER, type CharacterDef } from './Characters';
 import { pickEnemyKind, createEnemy, createBoss, BossBag, BOSS_DEFS } from './Enemies';
 import { FlowField } from './Pathfinding';
+import { TouchControls } from './Touch';
 import {
   WEAPON_DEFS,
   rollWeapon,
@@ -222,6 +223,8 @@ export class Game {
   private selectedCharacterIndex = 0;
   private listeningForAction: ActionId | null = null;
   private paused = false;
+  /** Touch pads. Present on every build; they only draw once a finger lands. */
+  private touch: TouchControls;
   /** True while the volume bar is being dragged rather than clicked once. */
   private draggingVolume = false;
   /** Where the controls screen returns to - the menu, or a paused run. */
@@ -301,6 +304,7 @@ export class Game {
     this.lightMaskCtx = this.lightMaskCanvas.getContext('2d')!;
 
     this.meta = loadMeta();
+    this.touch = new TouchControls(canvas, () => this.scene === 'playing' && !this.paused);
     this.settings = loadSettings();
     this.keybinds = loadBindings();
     this.effects = computeEffects(this.meta.skills);
@@ -589,9 +593,12 @@ export class Game {
     this.accumulator += frameDt;
 
     while (this.accumulator >= FIXED_DT) {
+      const tap = this.touch.takeTap();
+      if (tap) this.input.injectClick(tap.x, tap.y);
       this.fixedUpdate(FIXED_DT);
       this.accumulator -= FIXED_DT;
       this.input.endFrame();
+      this.touch.endFrame();
     }
     this.render();
     requestAnimationFrame(this.loop);
@@ -614,7 +621,7 @@ export class Game {
     // Pausing is available to both ends of a co-op link. The host actually
     // stops the simulation; a guest stops acting (the host keeps running), so
     // either player can step away or go re-bind a key mid-run.
-    if (this.actionPressed('pause') || this.input.wasPressed('Escape')) {
+    if (this.actionPressed('pause') || this.input.wasPressed('Escape') || this.touch.wasPressed('pause')) {
       this.paused = !this.paused;
       this.sfx.points();
     }
@@ -653,20 +660,32 @@ export class Game {
       mx /= len;
       my /= len;
     }
+    const stick = this.touch.moveVector();
+    if (stick.x !== 0 || stick.y !== 0) {
+      mx = stick.x;
+      my = stick.y;
+    }
+    // The right pad wins over the mouse when it is being pushed, and a bare
+    // tap keeps whatever heading the player already had.
+    const touchAim = this.touch.aimAngle();
     return {
       mx,
       my,
-      aim: p ? Math.atan2(worldMouseY - p.y, worldMouseX - p.x) : 0,
-      fireHeld: this.actionDown('shoot') || this.input.mouseDown,
-      firePressed: this.actionPressed('shoot') || this.input.wasMousePressed(),
-      dash: this.actionPressed('dash'),
-      ability: this.actionPressed('ability'),
-      ultimate: this.actionPressed('ultimate'),
-      interactHeld: this.actionDown('interact'),
-      interactPressed: this.actionPressed('interact'),
-      melee: this.actionPressed('melee'),
-      reload: this.actionPressed('reload'),
-      swap: this.actionPressed('swapWeapon'),
+      aim: touchAim ?? (p ? Math.atan2(worldMouseY - p.y, worldMouseX - p.x) : 0),
+      fireHeld: this.actionDown('shoot') || this.input.mouseDown || this.touch.fireHeld(),
+      // Semi-autos fire on a press edge, and a held thumb produces no edges -
+      // without this they simply never fire on a phone. The rate is still
+      // governed by the weapon's own cooldown, so holding gives its natural
+      // cadence rather than a shot per frame.
+      firePressed: this.actionPressed('shoot') || this.input.wasMousePressed() || this.touch.fireHeld(),
+      dash: this.actionPressed('dash') || this.touch.wasPressed('dash'),
+      ability: this.actionPressed('ability') || this.touch.wasPressed('ability'),
+      ultimate: this.actionPressed('ultimate') || this.touch.wasPressed('ultimate'),
+      interactHeld: this.actionDown('interact') || this.touch.isHeld('interact'),
+      interactPressed: this.actionPressed('interact') || this.touch.wasPressed('interact'),
+      melee: this.actionPressed('melee') || this.touch.wasPressed('melee'),
+      reload: this.actionPressed('reload') || this.touch.wasPressed('reload'),
+      swap: this.actionPressed('swapWeapon') || this.touch.wasPressed('swap'),
       weapon1: this.actionPressed('weapon1'),
       weapon2: this.actionPressed('weapon2'),
     };
@@ -3314,6 +3333,7 @@ export class Game {
     }
 
     drawHud(ctx, this.players[this.localIndex] ?? this.players[0], this.level, this.getHudState());
+    if (!this.paused) this.touch.draw(ctx);
 
     if (this.paused) this.renderPauseMenu();
   }
@@ -3321,7 +3341,9 @@ export class Game {
   private getHudState(): HudState {
     const boss = this.enemies.find((e) => e.alive && e.kind === 'boss') ?? null;
     const partnerPlayer = this.players.find((p) => p.index !== this.localIndex);
-    const hint = `${formatKeyCode(this.keybinds.moveUp)}${formatKeyCode(this.keybinds.moveLeft)}${formatKeyCode(this.keybinds.moveDown)}${formatKeyCode(this.keybinds.moveRight)} move · Mouse aim · Click/${formatKeyCode(this.keybinds.shoot)} shoot · ${formatKeyCode(this.keybinds.dash)} dash`;
+    const hint = this.touch.active
+      ? 'Left thumb moves · right thumb aims and fires · buttons for dash, use and melee'
+      : `${formatKeyCode(this.keybinds.moveUp)}${formatKeyCode(this.keybinds.moveLeft)}${formatKeyCode(this.keybinds.moveDown)}${formatKeyCode(this.keybinds.moveRight)} move · Mouse aim · Click/${formatKeyCode(this.keybinds.shoot)} shoot · ${formatKeyCode(this.keybinds.dash)} dash`;
     return {
       round: this.round,
       depth: this.level.depth(),

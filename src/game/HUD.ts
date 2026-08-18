@@ -85,6 +85,42 @@ function diamondIcon(ctx: CanvasRenderingContext2D, cx: number, cy: number, s: n
   ctx.fill();
 }
 
+
+/** Small zombie head: square skull, sunken eyes, stitched mouth, one ragged ear. */
+function zombieIcon(ctx: CanvasRenderingContext2D, cx: number, cy: number, s: number) {
+  const half = s / 2;
+  ctx.fillStyle = '#6aa84f';
+  rr(ctx, cx - half, cy - half, s, s, s * 0.22);
+  ctx.fill();
+  // brow shadow, so the face reads at 20px
+  ctx.fillStyle = 'rgba(0,0,0,0.22)';
+  ctx.fillRect(cx - half, cy - half, s, s * 0.26);
+  // eyes
+  ctx.fillStyle = '#12200f';
+  ctx.fillRect(cx - s * 0.30, cy - s * 0.16, s * 0.20, s * 0.20);
+  ctx.fillRect(cx + s * 0.10, cy - s * 0.16, s * 0.20, s * 0.20);
+  ctx.fillStyle = '#c9403a';
+  ctx.fillRect(cx + s * 0.14, cy - s * 0.12, s * 0.09, s * 0.09);
+  // stitched mouth
+  ctx.strokeStyle = '#12200f';
+  ctx.lineWidth = Math.max(1, s * 0.07);
+  ctx.beginPath();
+  ctx.moveTo(cx - s * 0.28, cy + s * 0.26);
+  ctx.lineTo(cx + s * 0.28, cy + s * 0.26);
+  ctx.stroke();
+  ctx.lineWidth = Math.max(1, s * 0.05);
+  for (let i = -1; i <= 1; i++) {
+    const sx = cx + i * s * 0.18;
+    ctx.beginPath();
+    ctx.moveTo(sx, cy + s * 0.16);
+    ctx.lineTo(sx, cy + s * 0.36);
+    ctx.stroke();
+  }
+  // ragged ear
+  ctx.fillStyle = '#5b9142';
+  ctx.fillRect(cx + half - s * 0.04, cy - s * 0.10, s * 0.16, s * 0.22);
+}
+
 /** Soul Knight style stat row: icon, chunky segmented bar, numeric readout. */
 function statRow(
   ctx: CanvasRenderingContext2D,
@@ -367,6 +403,33 @@ export function drawHud(ctx: CanvasRenderingContext2D, player: Player, level: Le
       ctx.fill();
     }
   }
+
+
+  // ---------- zombies-left counter, tucked under the minimap ----------
+  const zcH = 30;
+  const zcY = mmY + mmH + 8;
+  ctx.fillStyle = 'rgba(20,16,12,0.86)';
+  rr(ctx, mmX, zcY, mmW, zcH, 7);
+  ctx.fill();
+  // runs hot once the wave is nearly out, matching the wave bar up top
+  const zombiesLeft = hud.enemiesRemaining;
+  const waveNearlyOut = zombiesLeft > 0 && zombiesLeft <= Math.max(1, Math.round(Math.max(1, hud.waveTotal) * 0.2));
+  ctx.strokeStyle = zombiesLeft <= 0 ? '#3ddc73' : waveNearlyOut ? '#ffb038' : '#6f5a3f';
+  ctx.lineWidth = 2;
+  rr(ctx, mmX, zcY, mmW, zcH, 7);
+  ctx.stroke();
+
+  zombieIcon(ctx, mmX + 20, zcY + zcH / 2, 19);
+
+  ctx.textAlign = 'left';
+  ctx.font = 'bold 17px monospace';
+  ctx.fillStyle = zombiesLeft <= 0 ? '#3ddc73' : waveNearlyOut ? '#ffb038' : '#f4efe6';
+  ctx.fillText(hud.intermissionTimer > 0 ? '—' : `${zombiesLeft}`, mmX + 36, zcY + zcH / 2 + 6);
+
+  ctx.font = '9px monospace';
+  ctx.fillStyle = '#8d97a5';
+  ctx.textAlign = 'right';
+  ctx.fillText(hud.intermissionTimer > 0 ? 'WAVE CLEAR' : 'LEFT IN WAVE', mmX + mmW - 10, zcY + zcH / 2 + 4);
 
   // ---------- status chips ----------
   const chips: { label: string; color: string }[] = [];
